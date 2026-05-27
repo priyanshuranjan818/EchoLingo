@@ -1,0 +1,14 @@
+.idea/
+.gradle/
+build/
+out/
+
+android/.gradle/
+android/build/
+android/app/build/
+
+server/target/
+server/cache/
+
+*.iml
+*.log

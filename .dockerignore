@@ -1,0 +1,12 @@
+.git
+.idea
+.gradle
+
+android/.gradle
+android/build
+android/app/build
+
+server/target
+server/cache
+
+*.log
