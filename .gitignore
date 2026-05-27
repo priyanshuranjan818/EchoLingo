@@ -12,3 +12,8 @@ server/cache/
 
 *.iml
 *.log
+
+# Secrets
+.env
+local.properties
+

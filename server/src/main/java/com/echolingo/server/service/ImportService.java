@@ -12,96 +12,176 @@ import java.util.regex.Pattern;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
+/**
+ * Orchestrates the full subtitle import pipeline (de → en, hardcoded).
+ *
+ * Pipeline:
+ *  1. Memory cache (warm, per JVM run)
+ *  2. File cache  (persistent, version 4)
+ *  3. YouTube page scrape for caption track URLs
+ *  4. Source cues: YouTube VTT → yt-dlp fallback (Groq Whisper as last resort)
+ *  5. Translation cues: YouTube EN VTT → Google Translate fallback
+ *  6. Score → persist to file cache
+ */
 @Service
 public class ImportService {
-    private static final Pattern YOUTUBE_ID = Pattern.compile("(?:v=|youtu\\.be/|shorts/|embed/)([A-Za-z0-9_-]{11})");
 
+    private static final Pattern YOUTUBE_ID =
+            Pattern.compile("(?:v=|youtu\\.be/|shorts/|embed/)([A-Za-z0-9_-]{11})");
+
+    private static final String SOURCE_LANG = "de";
+    private static final String TARGET_LANG = "en";
+
+    // Warm in-memory cache — avoids hitting disk on repeated calls within same run
     private final Map<String, VideoBundle> memoryCache = new ConcurrentHashMap<>();
 
-    public VideoMeta importVideo(String url, String sourceLang, String targetLang) {
+    private final CacheService      cacheService;
+    private final CaptionsService   captionsService;
+    private final VttParser         vttParser;
+    private final YtdlpService      ytdlpService;
+    private final TranslatorService translatorService;
+    private final ScoringEngine     scoringEngine;
+
+    public ImportService(CacheService cacheService,
+                         CaptionsService captionsService,
+                         VttParser vttParser,
+                         YtdlpService ytdlpService,
+                         TranslatorService translatorService,
+                         ScoringEngine scoringEngine) {
+        this.cacheService      = cacheService;
+        this.captionsService   = captionsService;
+        this.vttParser         = vttParser;
+        this.ytdlpService      = ytdlpService;
+        this.translatorService = translatorService;
+        this.scoringEngine     = scoringEngine;
+    }
+
+    // ---- Public API ---------------------------------------------------------
+
+    public VideoMeta importVideo(String url, String ignoredSourceLang, String ignoredTargetLang) {
         String videoId = extractVideoId(url);
-        VideoBundle existing = memoryCache.get(videoId);
-        if (existing != null) {
-            return withCached(existing.meta(), true);
+
+        // 1. Warm memory cache
+        VideoBundle warm = memoryCache.get(videoId);
+        if (warm != null) return withCached(warm.meta(), true);
+
+        // 2. Persistent file cache
+        var diskCached = cacheService.read(videoId);
+        if (diskCached.isPresent()) {
+            var b = diskCached.get();
+            memoryCache.put(videoId, new VideoBundle(b.meta(), b.source(), b.trans()));
+            return withCached(b.meta(), true);
         }
 
-        List<Cue> source = List.of(
-                new Cue(0, 0.0, 2.8, "Willkommen bei EchoLingo."),
-                new Cue(1, 3.0, 6.2, "Ziehe die Untertitel nach oben oder unten."),
-                new Cue(2, 6.4, 9.5, "Bald kommen echte YouTube-Untertitel dazu.")
-        );
-        List<Cue> translation = List.of(
-                new Cue(0, 0.0, 2.8, "Welcome to EchoLingo."),
-                new Cue(1, 3.0, 6.2, "Drag subtitles up or down."),
-                new Cue(2, 6.4, 9.5, "Real YouTube subtitles are coming next.")
-        );
+        // 3. Fetch YouTube page metadata + caption track URLs
+        CaptionsService.PageData page = captionsService.fetchPageData(videoId);
+
+        // 4. Get German (source) cues
+        String deSource;
+        List<Cue> sourceCues;
+
+        String deVttUrl = page.captionTrackUrls().get(SOURCE_LANG);
+        if (deVttUrl != null && !deVttUrl.isBlank()) {
+            String vtt = captionsService.fetchVtt(deVttUrl);
+            sourceCues = vttParser.parse(vtt);
+            deSource = "youtube_captions";
+        } else {
+            // Fallback: yt-dlp subtitle download
+            sourceCues = ytdlpService.fetchSubtitles(videoId, SOURCE_LANG, vttParser);
+            deSource = "ytdlp";
+        }
+
+        if (sourceCues.isEmpty()) {
+            throw new AppError(HttpStatus.UNPROCESSABLE_ENTITY,
+                    "No German subtitles found for this video. "
+                    + "Try a video that has German auto-captions.");
+        }
+
+        // 5. Get English (translation) cues
+        String enSource;
+        List<Cue> transCues;
+
+        String enVttUrl = page.captionTrackUrls().get(TARGET_LANG);
+        if (enVttUrl != null && !enVttUrl.isBlank()) {
+            String vtt = captionsService.fetchVtt(enVttUrl);
+            transCues = vttParser.parse(vtt);
+            enSource = "youtube_captions_en";
+        } else {
+            transCues = translatorService.translateCues(sourceCues, SOURCE_LANG, TARGET_LANG);
+            enSource = "google_translate";
+        }
+
+        // 6. Score
+        ScoringEngine.Scores scores = scoringEngine.computeAllScores(
+                sourceCues, transCues, page.durationSec(), enSource);
 
         VideoMeta meta = new VideoMeta(
                 videoId,
-                "EchoLingo import scaffold",
-                10,
-                "https://img.youtube.com/vi/" + videoId + "/hqdefault.jpg",
-                true,
-                true,
-                sourceLang == null || sourceLang.isBlank() ? "de" : sourceLang,
-                targetLang == null || targetLang.isBlank() ? "en" : targetLang,
-                new SubtitleScores(100, 90, 90, 93),
+                page.title(),
+                page.durationSec(),
+                page.thumbnailUrl(),
+                !sourceCues.isEmpty(),
+                !transCues.isEmpty(),
+                deSource,
+                enSource,
+                new SubtitleScores(scores.syncScore(), scores.qualityScore(),
+                        scores.translationScore(), scores.overallScore()),
                 false,
                 true
         );
 
-        memoryCache.put(videoId, new VideoBundle(meta, source, translation));
+        // 7. Persist to file cache + warm memory cache
+        cacheService.write(videoId, meta, sourceCues, transCues);
+        memoryCache.put(videoId, new VideoBundle(meta, sourceCues, transCues));
+
         return meta;
     }
 
     public VideoMeta getMeta(String videoId) {
-        VideoBundle bundle = getBundle(videoId);
-        return withCached(bundle.meta(), true);
+        return withCached(getBundle(videoId).meta(), true);
     }
 
     public List<Cue> getSubtitles(String videoId, String lang) {
         VideoBundle bundle = getBundle(videoId);
-        if ("en".equalsIgnoreCase(lang)) {
-            return bundle.translation();
-        }
-        return bundle.source();
+        return TARGET_LANG.equalsIgnoreCase(lang) ? bundle.translation() : bundle.source();
     }
 
+    // ---- Helpers ------------------------------------------------------------
+
     private VideoBundle getBundle(String videoId) {
-        VideoBundle bundle = memoryCache.get(videoId);
-        if (bundle == null) {
-            throw new AppError(HttpStatus.NOT_FOUND, "Video has not been imported yet.");
+        // Check memory first, then disk
+        VideoBundle b = memoryCache.get(videoId);
+        if (b != null) return b;
+
+        var disk = cacheService.read(videoId);
+        if (disk.isPresent()) {
+            var cached = disk.get();
+            VideoBundle loaded = new VideoBundle(cached.meta(), cached.source(), cached.trans());
+            memoryCache.put(videoId, loaded);
+            return loaded;
         }
-        return bundle;
+
+        throw new AppError(HttpStatus.NOT_FOUND,
+                "Video '" + videoId + "' has not been imported yet. Call POST /api/import first.");
     }
 
     private static VideoMeta withCached(VideoMeta meta, boolean cached) {
         return new VideoMeta(
-                meta.videoId(),
-                meta.title(),
-                meta.duration(),
-                meta.thumbnailUrl(),
-                meta.hasDe(),
-                meta.hasEn(),
-                meta.deSource(),
-                meta.enSource(),
-                meta.scores(),
-                cached,
-                meta.ready()
-        );
+                meta.videoId(), meta.title(), meta.duration(), meta.thumbnailUrl(),
+                meta.hasDe(), meta.hasEn(), meta.deSource(), meta.enSource(),
+                meta.scores(), cached, meta.ready());
     }
 
     private static String extractVideoId(String url) {
-        Matcher matcher = YOUTUBE_ID.matcher(url);
-        if (matcher.find()) {
-            return matcher.group(1);
+        if (url == null || url.isBlank()) {
+            throw new AppError(HttpStatus.BAD_REQUEST, "URL must not be blank.");
         }
-        if (url.matches("[A-Za-z0-9_-]{11}")) {
-            return url;
-        }
-        throw new AppError(HttpStatus.BAD_REQUEST, "Enter a valid YouTube URL or video ID.");
+        Matcher m = YOUTUBE_ID.matcher(url);
+        if (m.find()) return m.group(1);
+        if (url.matches("[A-Za-z0-9_-]{11}")) return url;
+        throw new AppError(HttpStatus.BAD_REQUEST, "Enter a valid YouTube URL or 11-character video ID.");
     }
 
-    private record VideoBundle(VideoMeta meta, List<Cue> source, List<Cue> translation) {
-    }
+    private record VideoBundle(VideoMeta meta, List<Cue> source, List<Cue> translation) {}
 }
+

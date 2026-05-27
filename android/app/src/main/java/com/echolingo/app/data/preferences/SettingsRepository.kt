@@ -41,7 +41,12 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { it[PreferencesKeys.SHOW_TRANS] = value }
     }
 
+    suspend fun setFontSize(value: FontSize) {
+        context.dataStore.edit { it[PreferencesKeys.FONT_SIZE] = value.name }
+    }
+
     suspend fun setSubtitleYPercent(value: Float) {
         context.dataStore.edit { it[PreferencesKeys.SUBTITLE_Y_PERCENT] = value.coerceIn(0.12f, 0.86f) }
     }
 }
+
