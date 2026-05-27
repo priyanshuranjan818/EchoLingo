@@ -15,7 +15,7 @@ fun CueDto.toDomain(): Cue =
 fun SubtitleScoresDto.toDomain(): SubtitleScores =
     SubtitleScores(syncScore, qualityScore, translationScore, overallScore)
 
-fun ImportResponse.toMeta(): VideoMeta =
+fun ImportResponse.toDomain(): VideoMeta =
     VideoMeta(videoId, title, duration, thumbnailUrl, hasDe, hasEn, scores.toDomain())
 
 fun VideoMetaDto.toDomain(): VideoMeta =

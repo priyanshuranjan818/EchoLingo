@@ -5,9 +5,11 @@ import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 
 object PreferencesKeys {
-    val SERVER_BASE_URL = stringPreferencesKey("server_base_url")
-    val SHOW_SOURCE = booleanPreferencesKey("show_source")
-    val SHOW_TRANS = booleanPreferencesKey("show_trans")
-    val FONT_SIZE = stringPreferencesKey("font_size")
+    val SERVER_BASE_URL  = stringPreferencesKey("server_base_url")
+    val SHOW_SOURCE      = booleanPreferencesKey("show_source")
+    val SHOW_TRANS       = booleanPreferencesKey("show_trans")
+    val FONT_SIZE        = stringPreferencesKey("font_size")
     val SUBTITLE_Y_PERCENT = floatPreferencesKey("subtitle_y_percent")
+    val GROQ_API_KEY     = stringPreferencesKey("groq_api_key")   // BYOK
 }
+

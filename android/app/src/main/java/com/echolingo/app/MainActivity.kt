@@ -22,6 +22,8 @@ import com.echolingo.app.data.preferences.SettingsRepository
 import com.echolingo.app.data.repository.HistoryRepository
 import com.echolingo.app.ui.history.HistoryScreen
 import com.echolingo.app.ui.home.HomeScreen
+import com.echolingo.app.ui.mode.ModeSelectScreen
+import com.echolingo.app.ui.mode.PlayMode
 import com.echolingo.app.ui.player.PlayerScreen
 import com.echolingo.app.ui.settings.SettingsSheet
 import com.echolingo.app.ui.theme.EchoLingoTheme
@@ -64,8 +66,8 @@ private fun EchoLingoApp() {
         composable("home") {
             HomeScreen(
                 settingsRepository = settingsRepository,
-                onOpenPlayer  = { videoId -> navController.navigate("player/$videoId") },
-                onOpenHistory = { navController.navigate("history") },
+                onOpenPlayer   = { videoId -> navController.navigate("mode-select/$videoId") },
+                onOpenHistory  = { navController.navigate("history") },
                 onOpenSettings = { showSettings = true },
             )
         }
@@ -74,7 +76,7 @@ private fun EchoLingoApp() {
             HistoryScreen(
                 historyRepository = historyRepository,
                 onOpenPlayer = { videoId ->
-                    navController.navigate("player/$videoId") {
+                    navController.navigate("mode-select/$videoId") {
                         popUpTo("history") { inclusive = false }
                     }
                 },
@@ -82,14 +84,37 @@ private fun EchoLingoApp() {
             )
         }
 
+        // Mode selector — shown after import / from history
         composable(
-            route = "player/{videoId}",
+            route = "mode-select/{videoId}",
             arguments = listOf(navArgument("videoId") { type = NavType.StringType }),
+        ) { entry ->
+            ModeSelectScreen(
+                videoId            = entry.arguments?.getString("videoId").orEmpty(),
+                settingsRepository = settingsRepository,
+                onModeSelected     = { mode ->
+                    val shadow = mode == PlayMode.SHADOW
+                    navController.navigate("player/${entry.arguments?.getString("videoId")}/$shadow") {
+                        // Keep mode-select in back-stack so Back from player returns here
+                    }
+                },
+                onBack = { navController.popBackStack() },
+            )
+        }
+
+        // Player — shadowing arg tells it which mode was chosen
+        composable(
+            route = "player/{videoId}/{shadowing}",
+            arguments = listOf(
+                navArgument("videoId")   { type = NavType.StringType },
+                navArgument("shadowing") { type = NavType.BoolType; defaultValue = false },
+            ),
         ) { entry ->
             PlayerScreen(
                 videoId           = entry.arguments?.getString("videoId").orEmpty(),
                 settingsRepository = settingsRepository,
                 historyRepository  = historyRepository,
+                shadowingEnabled   = entry.arguments?.getBoolean("shadowing") ?: false,
                 onBack = { navController.popBackStack() },
             )
         }

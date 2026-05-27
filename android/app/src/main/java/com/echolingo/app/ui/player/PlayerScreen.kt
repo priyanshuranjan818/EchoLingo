@@ -42,7 +42,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import com.echolingo.app.data.api.ApiFactory
 import com.echolingo.app.data.api.toDomain
-import com.echolingo.app.data.api.toMeta
+import com.echolingo.app.data.api.toDomain
 import com.echolingo.app.data.preferences.AppSettings
 import com.echolingo.app.data.preferences.SettingsRepository
 import com.echolingo.app.data.repository.HistoryRepository
@@ -63,6 +63,7 @@ fun PlayerScreen(
     videoId: String,
     settingsRepository: SettingsRepository,
     historyRepository: HistoryRepository,
+    shadowingEnabled: Boolean = false,       // set by ModeSelectScreen
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -79,7 +80,8 @@ fun PlayerScreen(
     var status       by remember { mutableStateOf("Loading video...") }
 
     // --- Shadowing state ---
-    var shadowingOn      by remember { mutableStateOf(false) }
+    // If the user chose Shadow mode, start ON automatically
+    var shadowingOn      by remember { mutableStateOf(shadowingEnabled) }
     var shadowingState   by remember { mutableStateOf<ShadowingState>(ShadowingState.Idle) }
     val recorder         = remember { ShadowingRecorder(context) }
     var lastCueForShadow by remember { mutableStateOf<Cue?>(null) }
@@ -97,7 +99,7 @@ fun PlayerScreen(
             val api    = ApiFactory.create(settings.serverBaseUrl)
             sourceCues = api.getSubtitles(videoId, "de").map { it.toDomain() }
             transCues  = api.getSubtitles(videoId, "en").map { it.toDomain() }
-            val meta   = api.getMeta(videoId).toMeta()
+            val meta   = api.getMeta(videoId).toDomain()
             scope.launch { historyRepository.record(meta) }
             val streamUrl = settings.serverBaseUrl.trimEnd('/') + "/api/video/$videoId/stream"
             player.setMediaItem(MediaItem.fromUri(streamUrl))
@@ -154,7 +156,12 @@ fun PlayerScreen(
         }
         scope.launch {
             val transcript = try {
-                transcribeAudio(settings.serverBaseUrl, audioFile, "de")
+                transcribeAudio(
+                    serverBaseUrl = settings.serverBaseUrl,
+                    audioFile     = audioFile,
+                    lang          = "de",
+                    groqApiKey    = settings.groqApiKey,    // BYOK key from Settings
+                )
             } catch (e: Exception) {
                 ""
             }
@@ -255,25 +262,27 @@ fun PlayerScreen(
                         },
                     )
 
-                    // Shadowing toggle chip
-                    FilterChip(
-                        selected = shadowingOn,
-                        onClick  = {
-                            if (!shadowingOn) {
-                                micPermLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                            } else {
-                                shadowingOn = false
-                                shadowingState = ShadowingState.Idle
-                                if (recorder.isRecording()) recorder.stopRecording()
-                                player.play()
-                            }
-                        },
-                        label = { Text(if (shadowingOn) "🎤 Shadow ON" else "Shadow", fontSize = androidx.compose.ui.unit.TextUnit.Unspecified) },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = Color(0xFFEF5350),
-                            selectedLabelColor     = Color.White,
-                        ),
-                    )
+                    // Only show the toggle chip in Watch mode (in Shadow mode it auto-started)
+                    if (!shadowingEnabled) {
+                        FilterChip(
+                            selected = shadowingOn,
+                            onClick  = {
+                                if (!shadowingOn) {
+                                    micPermLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                } else {
+                                    shadowingOn = false
+                                    shadowingState = ShadowingState.Idle
+                                    if (recorder.isRecording()) recorder.stopRecording()
+                                    player.play()
+                                }
+                            },
+                            label = { Text(if (shadowingOn) "🎤 Shadow ON" else "Shadow", fontSize = androidx.compose.ui.unit.TextUnit.Unspecified) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = Color(0xFFEF5350),
+                                selectedLabelColor     = Color.White,
+                            ),
+                        )
+                    }
                 }
             }
         }

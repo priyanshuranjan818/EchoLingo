@@ -2,8 +2,6 @@ package com.echolingo.server.service;
 
 import com.echolingo.server.config.AppConfig;
 import com.echolingo.server.exception.AppError;
-import com.google.gson.Gson;
-import com.google.gson.JsonObject;
 import java.io.File;
 import java.io.IOException;
 import okhttp3.MediaType;
@@ -17,8 +15,10 @@ import org.springframework.stereotype.Service;
 
 /**
  * Sends an audio file to Groq Whisper for transcription.
- * Used as the last-resort fallback when YouTube has no German captions
- * and yt-dlp subtitle download also fails.
+ *
+ * BYOK support: if a per-request key is provided (from the Android app's Settings),
+ * that key is used instead of the server-configured ECHOLINGO_GROQ_API_KEY.
+ * This means the EC2 server can run with NO Groq key — every user brings their own.
  */
 @Service
 public class GroqService {
@@ -26,7 +26,6 @@ public class GroqService {
     private static final String GROQ_URL =
             "https://api.groq.com/openai/v1/audio/transcriptions";
 
-    private static final Gson GSON = new Gson();
     private final OkHttpClient httpClient;
     private final AppConfig config;
 
@@ -38,18 +37,21 @@ public class GroqService {
     }
 
     /**
-     * Transcribes the given audio file using Groq Whisper.
+     * Transcribes an audio file via Groq Whisper.
      *
-     * @param audioFilePath absolute path to the audio file (m4a / mp3 / wav)
-     * @param language      ISO 639-1 language hint (e.g. "de")
-     * @return raw transcript string, never null
-     * @throws AppError if the API key is missing or the call fails
+     * @param audioFilePath  absolute path to the audio file (m4a / mp3 / wav)
+     * @param language       ISO 639-1 hint, e.g. "de"
+     * @param keyOverride    BYOK key from the client; null or blank → use server config key
      */
-    public String transcribeAudio(String audioFilePath, String language) {
-        String apiKey = config.groqApiKey();
+    public String transcribeAudio(String audioFilePath, String language, String keyOverride) {
+        // BYOK: prefer the per-request key, fall back to the server-configured key
+        String apiKey = (keyOverride != null && !keyOverride.isBlank())
+                ? keyOverride
+                : config.groqApiKey();
+
         if (apiKey == null || apiKey.isBlank()) {
-            throw new AppError(HttpStatus.SERVICE_UNAVAILABLE,
-                    "Groq API key not configured (ECHOLINGO_GROQ_API_KEY).");
+            throw new AppError(HttpStatus.UNPROCESSABLE_ENTITY,
+                    "No Groq API key. Enter your key in the app under Settings → Groq API Key.");
         }
 
         File audioFile = new File(audioFilePath);
@@ -58,9 +60,7 @@ public class GroqService {
                     "Audio file not found: " + audioFilePath);
         }
 
-        RequestBody fileBody = RequestBody.create(audioFile,
-                MediaType.parse("audio/mpeg"));
-
+        RequestBody fileBody = RequestBody.create(audioFile, MediaType.parse("audio/mpeg"));
         MultipartBody body = new MultipartBody.Builder()
                 .setType(MultipartBody.FORM)
                 .addFormDataPart("file", audioFile.getName(), fileBody)
@@ -81,10 +81,14 @@ public class GroqService {
             }
             String responseBody = resp.body().string();
             if (!resp.isSuccessful()) {
+                if (resp.code() == 401) {
+                    throw new AppError(HttpStatus.UNAUTHORIZED,
+                            "Invalid Groq API key. Check Settings → Groq API Key.");
+                }
                 throw new AppError(HttpStatus.BAD_GATEWAY,
                         "Groq API error " + resp.code() + ": " + responseBody);
             }
-            // response_format=text → plain string response
+            // response_format=text → plain text response, not JSON
             return responseBody.trim();
         } catch (IOException e) {
             throw new AppError(HttpStatus.BAD_GATEWAY,

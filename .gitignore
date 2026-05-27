@@ -16,4 +16,5 @@ server/cache/
 # Secrets
 .env
 local.properties
+*.hprof
 
