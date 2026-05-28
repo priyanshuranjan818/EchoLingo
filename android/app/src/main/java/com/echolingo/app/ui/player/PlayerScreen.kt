@@ -160,7 +160,6 @@ fun PlayerScreen(
                     serverBaseUrl = settings.serverBaseUrl,
                     audioFile     = audioFile,
                     lang          = "de",
-                    groqApiKey    = settings.groqApiKey,    // BYOK key from Settings
                 )
             } catch (e: Exception) {
                 ""

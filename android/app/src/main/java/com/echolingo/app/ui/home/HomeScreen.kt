@@ -105,7 +105,18 @@ fun HomeScreen(
         Spacer(Modifier.height(16.dp))
 
         if (loading) {
-            CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally))
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.align(Alignment.CenterHorizontally),
+            ) {
+                CircularProgressIndicator()
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Fetching subtitles… (up to 60s for new videos)",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.sp,
+                )
+            }
         }
         error?.let {
             Text(it, color = MaterialTheme.colorScheme.error)

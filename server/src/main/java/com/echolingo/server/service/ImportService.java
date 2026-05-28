@@ -53,10 +53,6 @@ public class ImportService {
     }
 
     public VideoMeta importVideo(String url, String ignoredSourceLang, String ignoredTargetLang) {
-        return importVideoWithKey(url, null);
-    }
-
-    public VideoMeta importVideoWithKey(String url, String groqKeyOverride) {
         String videoId = extractVideoId(url);
         log.info("importVideo: videoId={}", videoId);
 
@@ -98,8 +94,7 @@ public class ImportService {
                 try {
                     audioPath = ytdlpService.downloadAudio(videoId);
                     log.info("Audio downloaded to: {}", audioPath);
-                    String transcript = groqService.transcribeAudio(
-                            audioPath.toString(), SOURCE_LANG, groqKeyOverride);
+                    String transcript = groqService.transcribeAudio(audioPath.toString(), SOURCE_LANG);
                     log.info("Whisper transcript length: {} chars", transcript.length());
                     sourceCues = transcriptToCues(transcript);
                     deSource = "groq_whisper";

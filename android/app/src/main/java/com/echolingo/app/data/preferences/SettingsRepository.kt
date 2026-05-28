@@ -15,7 +15,6 @@ data class AppSettings(
     val showTrans: Boolean = true,
     val fontSize: FontSize = FontSize.M,
     val subtitleYPercent: Float = 0.78f,
-    val groqApiKey: String = "",           // BYOK — blank = use server key
 )
 
 class SettingsRepository(private val context: Context) {
@@ -27,7 +26,6 @@ class SettingsRepository(private val context: Context) {
                 showTrans        = prefs[PreferencesKeys.SHOW_TRANS] ?: true,
                 fontSize         = prefs[PreferencesKeys.FONT_SIZE]?.let { FontSize.valueOf(it) } ?: FontSize.M,
                 subtitleYPercent = prefs[PreferencesKeys.SUBTITLE_Y_PERCENT] ?: 0.78f,
-                groqApiKey       = prefs[PreferencesKeys.GROQ_API_KEY] ?: "",
             )
         }
 
@@ -50,9 +48,4 @@ class SettingsRepository(private val context: Context) {
     suspend fun setSubtitleYPercent(value: Float) {
         context.dataStore.edit { it[PreferencesKeys.SUBTITLE_Y_PERCENT] = value.coerceIn(0.12f, 0.86f) }
     }
-
-    suspend fun setGroqApiKey(value: String) {
-        context.dataStore.edit { it[PreferencesKeys.GROQ_API_KEY] = value.trim() }
-    }
 }
-

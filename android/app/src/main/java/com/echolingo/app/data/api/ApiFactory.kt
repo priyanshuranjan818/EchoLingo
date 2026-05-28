@@ -4,6 +4,7 @@ import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
+import java.util.concurrent.TimeUnit
 
 object ApiFactory {
     fun create(baseUrl: String): EchoLingoApi {
@@ -13,6 +14,9 @@ object ApiFactory {
         val client = OkHttpClient.Builder()
             .addInterceptor(logging)
             .followRedirects(true)
+            .connectTimeout(45, TimeUnit.SECONDS)
+            .readTimeout(300, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
             .build()
 
         return Retrofit.Builder()

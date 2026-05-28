@@ -15,16 +15,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-/**
- * POST /api/transcribe
- *
- * Accepts base64-encoded audio from the Android app (shadowing mode),
- * forwards it to Groq Whisper, and returns the transcript.
- *
- * BYOK: if the request includes a non-blank groqApiKey, it is used
- * instead of the server's configured key. This lets each user bring
- * their own free Groq key — the server needs no key of its own.
- */
 @RestController
 @RequestMapping("/api/transcribe")
 public class TranscribeController {
@@ -55,31 +45,25 @@ public class TranscribeController {
         }
 
         try {
-            // BYOK: use the key from the request if provided, else fall back to server config
-            String keyToUse = (req.groqApiKey() != null && !req.groqApiKey().isBlank())
-                    ? req.groqApiKey()
-                    : null;   // null → GroqService uses its configured key
-
-            String transcript = groqService.transcribeAudio(
-                    tempFile.toString(), req.lang(), keyToUse);
+            String transcript = groqService.transcribeAudio(tempFile.toString(), req.lang());
             return ResponseEntity.ok(new TranscribeResponse(transcript));
         } finally {
-            try { Files.deleteIfExists(tempFile); } catch (IOException ignored) {}
+            try {
+                Files.deleteIfExists(tempFile);
+            } catch (IOException ignored) {
+            }
         }
     }
 
     public record TranscribeRequest(
             @NotBlank String audioBase64,
-            String lang,          // optional hint; normalised below
-            String groqApiKey     // BYOK — null/blank = use server key
+            String lang
     ) {
         public String lang() {
             return (lang == null || lang.isBlank()) ? "de" : lang;
         }
-        public String groqApiKey() {
-            return groqApiKey == null ? "" : groqApiKey;
-        }
     }
 
-    public record TranscribeResponse(String transcript) {}
+    public record TranscribeResponse(String transcript) {
+    }
 }

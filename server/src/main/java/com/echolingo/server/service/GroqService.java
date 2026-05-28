@@ -13,13 +13,6 @@ import okhttp3.Response;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
-/**
- * Sends an audio file to Groq Whisper for transcription.
- *
- * BYOK support: if a per-request key is provided (from the Android app's Settings),
- * that key is used instead of the server-configured ECHOLINGO_GROQ_API_KEY.
- * This means the EC2 server can run with NO Groq key — every user brings their own.
- */
 @Service
 public class GroqService {
 
@@ -36,22 +29,11 @@ public class GroqService {
                 .build();
     }
 
-    /**
-     * Transcribes an audio file via Groq Whisper.
-     *
-     * @param audioFilePath  absolute path to the audio file (m4a / mp3 / wav)
-     * @param language       ISO 639-1 hint, e.g. "de"
-     * @param keyOverride    BYOK key from the client; null or blank → use server config key
-     */
-    public String transcribeAudio(String audioFilePath, String language, String keyOverride) {
-        // BYOK: prefer the per-request key, fall back to the server-configured key
-        String apiKey = (keyOverride != null && !keyOverride.isBlank())
-                ? keyOverride
-                : config.groqApiKey();
-
+    public String transcribeAudio(String audioFilePath, String language) {
+        String apiKey = config.groqApiKey();
         if (apiKey == null || apiKey.isBlank()) {
             throw new AppError(HttpStatus.UNPROCESSABLE_ENTITY,
-                    "No Groq API key. Enter your key in the app under Settings → Groq API Key.");
+                    "No Groq API key configured on the server. Set ECHOLINGO_GROQ_API_KEY in .env.");
         }
 
         File audioFile = new File(audioFilePath);
@@ -83,12 +65,11 @@ public class GroqService {
             if (!resp.isSuccessful()) {
                 if (resp.code() == 401) {
                     throw new AppError(HttpStatus.UNAUTHORIZED,
-                            "Invalid Groq API key. Check Settings → Groq API Key.");
+                            "Invalid server Groq API key. Check ECHOLINGO_GROQ_API_KEY in .env.");
                 }
                 throw new AppError(HttpStatus.BAD_GATEWAY,
                         "Groq API error " + resp.code() + ": " + responseBody);
             }
-            // response_format=text → plain text response, not JSON
             return responseBody.trim();
         } catch (IOException e) {
             throw new AppError(HttpStatus.BAD_GATEWAY,

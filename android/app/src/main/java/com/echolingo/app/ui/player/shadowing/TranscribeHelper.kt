@@ -13,20 +13,18 @@ interface TranscribeApi {
     data class TranscribeRequest(
         val audioBase64: String,
         val lang: String = "de",
-        val groqApiKey: String = "",    // BYOK — empty = server falls back to its own key
     )
     data class TranscribeResponse(val transcript: String)
 }
 
 /**
  * Reads a recorded audio file, base64-encodes it, and calls /api/transcribe.
- * If [groqApiKey] is blank the server will use its own configured key (fallback).
+ * The server uses its own ECHOLINGO_GROQ_API_KEY from the environment.
  */
 suspend fun transcribeAudio(
     serverBaseUrl: String,
     audioFile: File,
     lang: String = "de",
-    groqApiKey: String = "",
 ): String {
     val bytes = audioFile.readBytes()
     val b64   = Base64.getEncoder().encodeToString(bytes)
@@ -37,7 +35,7 @@ suspend fun transcribeAudio(
             okhttp3.OkHttpClient.Builder()
                 .followRedirects(true)
                 .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-                .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+                .readTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
                 .build()
         )
         .addConverterFactory(retrofit2.converter.gson.GsonConverterFactory.create())
@@ -48,8 +46,6 @@ suspend fun transcribeAudio(
         TranscribeApi.TranscribeRequest(
             audioBase64 = b64,
             lang        = lang,
-            groqApiKey  = groqApiKey,
         )
     ).transcript
 }
-
