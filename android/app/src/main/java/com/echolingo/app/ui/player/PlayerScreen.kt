@@ -158,7 +158,11 @@ fun PlayerScreen(
                     // Store it in the state so it survives all state transitions.
                     player.pause()
                     shadowingState = ShadowingState.Recording(prev)
-                    recorder.startRecording()
+                    recorder.startRecording(onAutoStop = {
+                        // Called by MediaRecorder when 8s max duration reached —
+                        // automatically evaluate without user pressing any button
+                        scope.launch { stopRecordingAndEvaluate() }
+                    })
                 }
                 if (cur != null) lastSeenCue = cur
             }
@@ -170,10 +174,11 @@ fun PlayerScreen(
             if (listenState is ShadowingState.Listening) {
                 if (positionMs >= listenState.targetCue.endMs) {
                     player.pause()
-                    // Small delay so the last word isn't clipped
                     delay(300)
                     shadowingState = ShadowingState.Recording(listenState.targetCue)
-                    recorder.startRecording()
+                    recorder.startRecording(onAutoStop = {
+                        scope.launch { stopRecordingAndEvaluate() }
+                    })
                 }
             }
 

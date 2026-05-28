@@ -3,9 +3,17 @@ package com.echolingo.app.ui.player.shadowing
 import com.echolingo.app.domain.model.Cue
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,6 +22,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -23,53 +32,41 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-/**
- * All states the shadowing flow can be in.
- *
- * IMPORTANT: Recording and Result carry the TARGET CUE so it is never lost
- * between state transitions. Previously Recording was a singleton object and
- * the cue was stored in a separate mutable that got cleared too early.
- */
 sealed class ShadowingState {
-    /** Normal playback — overlay hidden. */
-    data object Idle : ShadowingState()
-
-    /**
-     * Video is paused, mic is active. [targetCue] is the cue the user must repeat.
-     * Shown text: the German sentence + mic animation.
-     */
-    data class Recording(val targetCue: Cue) : ShadowingState()
-
-    /** Audio uploaded, waiting for Groq to respond. */
+    data object Idle       : ShadowingState()
+    data class  Recording(val targetCue: Cue) : ShadowingState()
     data object Processing : ShadowingState()
-
-    /**
-     * Groq returned a transcript, similarity scored.
-     * [targetCue] kept so "Listen Again" can seek back to the cue.
-     */
-    data class Result(
+    data class  Result(
         val passed: Boolean,
         val score: Int,
         val userText: String,
         val targetText: String,
         val targetCue: Cue,
     ) : ShadowingState()
-
-    /**
-     * "Listen Again" was tapped — ExoPlayer is replaying [targetCue].
-     * When positionMs >= targetCue.endMs the screen auto-transitions to Recording.
-     */
     data class Listening(val targetCue: Cue) : ShadowingState()
 }
 
+/**
+ * Clean, minimal shadowing overlay.
+ *
+ * Design principles:
+ *  - NO full-screen dark overlay — video stays visible at all times
+ *  - Recording state: just a pulsing mic button at the bottom. Tap to stop early,
+ *    or it auto-stops at 8 s. No "Speak now" text, no popup.
+ *  - Result (pass): small green pill fades in at bottom, auto-dismisses in 2 s
+ *  - Result (fail): compact card slides up from bottom with Listen Again / Try Again / Skip
+ *  - Processing: tiny spinner at bottom centre
+ */
 @Composable
 fun ShadowingOverlay(
     state: ShadowingState,
@@ -79,132 +76,129 @@ fun ShadowingOverlay(
     onSkip: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    AnimatedVisibility(
-        visible = state !is ShadowingState.Idle,
-        enter = fadeIn(),
-        exit  = fadeOut(),
-        modifier = modifier,
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.82f)),
-            contentAlignment = Alignment.Center,
+    Box(modifier = modifier) {
+
+        // ── Recording: pulsing mic at bottom, NO background ──────────────────
+        AnimatedVisibility(
+            visible = state is ShadowingState.Recording,
+            enter   = fadeIn(),
+            exit    = fadeOut(),
+            modifier = Modifier.align(Alignment.BottomCenter),
         ) {
-            when (state) {
-                is ShadowingState.Recording  -> RecordingPanel(
-                    targetText = state.targetCue.text,
-                    onStop     = onStopRecording,
-                )
-                is ShadowingState.Processing -> ProcessingPanel()
-                is ShadowingState.Result     -> ResultPanel(
-                    state        = state,
-                    onTryAgain   = onTryAgain,
+            PulsingMicButton(onClick = onStopRecording)
+        }
+
+        // ── Processing: tiny pill at bottom ──────────────────────────────────
+        AnimatedVisibility(
+            visible = state is ShadowingState.Processing,
+            enter   = fadeIn(),
+            exit    = fadeOut(),
+            modifier = Modifier.align(Alignment.BottomCenter),
+        ) {
+            Box(
+                modifier = Modifier
+                    .navigationBarsPadding()
+                    .padding(bottom = 32.dp)
+                    .background(Color.Black.copy(alpha = 0.65f), RoundedCornerShape(50))
+                    .padding(horizontal = 20.dp, vertical = 10.dp),
+            ) {
+                Text("⏳  Checking…", color = Color.White, fontSize = 14.sp)
+            }
+        }
+
+        // ── Listening: subtle pill at bottom ─────────────────────────────────
+        AnimatedVisibility(
+            visible = state is ShadowingState.Listening,
+            enter   = fadeIn(),
+            exit    = fadeOut(),
+            modifier = Modifier.align(Alignment.BottomCenter),
+        ) {
+            Box(
+                modifier = Modifier
+                    .navigationBarsPadding()
+                    .padding(bottom = 32.dp)
+                    .background(Color(0xFF1565C0).copy(alpha = 0.85f), RoundedCornerShape(50))
+                    .padding(horizontal = 20.dp, vertical = 10.dp),
+            ) {
+                Text("🔊  Listen…  Recording starts automatically", color = Color.White, fontSize = 13.sp)
+            }
+        }
+
+        // ── Result: slides up from bottom ────────────────────────────────────
+        AnimatedVisibility(
+            visible = state is ShadowingState.Result,
+            enter   = slideInVertically { it } + fadeIn(),
+            exit    = slideOutVertically { it } + fadeOut(),
+            modifier = Modifier.align(Alignment.BottomCenter),
+        ) {
+            if (state is ShadowingState.Result) {
+                ResultCard(
+                    state         = state,
+                    onTryAgain    = onTryAgain,
                     onListenAgain = { onListenAgain(state.targetCue) },
-                    onSkip       = onSkip,
+                    onSkip        = onSkip,
                 )
-                is ShadowingState.Listening  -> ListeningPanel()
-                else -> {}
             }
         }
     }
 }
 
-// ── Sub-panels ────────────────────────────────────────────────────────────────
+// ── Pulsing mic ───────────────────────────────────────────────────────────────
 
 @Composable
-private fun RecordingPanel(targetText: String, onStop: () -> Unit) {
+private fun PulsingMicButton(onClick: () -> Unit) {
+    val infiniteTransition = rememberInfiniteTransition(label = "mic_pulse")
+    val scale by infiniteTransition.animateFloat(
+        initialValue = 1f,
+        targetValue  = 1.18f,
+        animationSpec = infiniteRepeatable(
+            animation  = tween(700),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "scale",
+    )
+
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(16.dp),
         modifier = Modifier
-            .fillMaxWidth(0.88f)
-            .background(Color(0xFF1A1A2E), RoundedCornerShape(20.dp))
-            .padding(28.dp),
+            .navigationBarsPadding()
+            .padding(bottom = 28.dp),
     ) {
-        // Mic indicator
+        // Outer glow ring
         Box(
             modifier = Modifier
-                .size(72.dp)
-                .background(Color(0xFFEF5350), CircleShape),
+                .size(84.dp)
+                .scale(scale)
+                .background(Color(0xFFEF5350).copy(alpha = 0.28f), CircleShape),
             contentAlignment = Alignment.Center,
         ) {
-            Text("🎤", fontSize = 32.sp)
+            // Inner mic button — tap to stop early
+            Box(
+                modifier = Modifier
+                    .size(64.dp)
+                    .background(Color(0xFFEF5350), CircleShape)
+                    .clickable(onClick = onClick),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("🎤", fontSize = 28.sp)
+            }
         }
+
+        Spacer(Modifier.height(6.dp))
 
         Text(
-            "Repeat what you heard:",
-            color = Color.White.copy(alpha = 0.65f),
-            fontSize = 13.sp,
-        )
-
-        // Show the German text the user must say
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(Color.White.copy(alpha = 0.09f), RoundedCornerShape(10.dp))
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-        ) {
-            Text(
-                text = targetText,
-                color = Color.White,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.SemiBold,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
-
-        Spacer(Modifier.height(4.dp))
-
-        Button(
-            onClick = onStop,
-            colors = ButtonDefaults.buttonColors(containerColor = Color.White),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text("⏹  Done speaking", color = Color.Black, fontWeight = FontWeight.Bold)
-        }
-    }
-}
-
-@Composable
-private fun ProcessingPanel() {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        Text("⏳", fontSize = 44.sp)
-        Text(
-            "Checking your pronunciation…",
-            color = Color.White,
-            fontSize = 16.sp,
+            "Tap to stop",
+            color     = Color.White.copy(alpha = 0.55f),
+            fontSize  = 11.sp,
+            textAlign = TextAlign.Center,
         )
     }
 }
 
-@Composable
-private fun ListeningPanel() {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        Text("🔊", fontSize = 44.sp)
-        Text(
-            "Listen carefully…",
-            color = Color.White,
-            fontSize = 18.sp,
-            fontWeight = FontWeight.SemiBold,
-        )
-        Text(
-            "Recording will start automatically",
-            color = Color.White.copy(alpha = 0.55f),
-            fontSize = 13.sp,
-        )
-    }
-}
+// ── Result card ───────────────────────────────────────────────────────────────
 
 @Composable
-private fun ResultPanel(
+private fun ResultCard(
     state: ShadowingState.Result,
     onTryAgain: () -> Unit,
     onListenAgain: () -> Unit,
@@ -212,84 +206,81 @@ private fun ResultPanel(
 ) {
     Column(
         modifier = Modifier
-            .fillMaxWidth(0.88f)
+            .fillMaxWidth()
             .background(
-                if (state.passed) Color(0xFF1B5E20) else Color(0xFF3E0A0A),
-                RoundedCornerShape(20.dp),
+                if (state.passed) Color(0xFF1B5E20) else Color(0xFF1C1C1E),
+                RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
             )
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+            .navigationBarsPadding()
+            .padding(horizontal = 20.dp, vertical = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text(
-            text = if (state.passed) "✅ Great job!" else "❌ Not quite…",
-            fontSize = 22.sp,
-            fontWeight = FontWeight.Bold,
-            color = Color.White,
-        )
-
-        Text(
-            text = "Score: ${state.score}%",
-            fontSize = 15.sp,
-            color = Color.White.copy(alpha = 0.80f),
-        )
+        // Score row
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text       = if (state.passed) "✅  Great job!" else "❌  Not quite…",
+                fontSize   = 18.sp,
+                fontWeight = FontWeight.Bold,
+                color      = Color.White,
+            )
+            Text(
+                text    = "${state.score}%",
+                fontSize = 16.sp,
+                color   = if (state.passed) Color(0xFF69F0AE) else Color(0xFFEF9A9A),
+                fontWeight = FontWeight.Bold,
+            )
+        }
 
         if (!state.passed) {
-            // Show what user said vs what they should have said
+            // What you said vs target — compact two-line view
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(Color.White.copy(alpha = 0.07f), RoundedCornerShape(10.dp))
-                    .padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                    .background(Color.White.copy(alpha = 0.06f), RoundedCornerShape(10.dp))
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                LabeledText(
-                    label = "You said",
-                    text  = state.userText,
-                    color = Color(0xFFEF9A9A),
-                )
-                LabeledText(
-                    label = "Target",
-                    text  = state.targetText,
-                    color = Color(0xFFA5D6A7),
-                )
+                MiniLabel(label = "You said", text = state.userText, color = Color(0xFFEF9A9A))
+                MiniLabel(label = "Target",   text = state.targetText, color = Color(0xFFA5D6A7))
             }
 
-            // ── Action buttons ──────────────────────────────────────────────
-            // "Listen Again" replays the original cue so the user can hear it again
-            // before attempting. This is the key feature for language shadowing.
+            // Action buttons
             Button(
-                onClick = onListenAgain,
-                colors  = ButtonDefaults.buttonColors(containerColor = Color(0xFF1565C0)),
+                onClick  = onListenAgain,
+                colors   = ButtonDefaults.buttonColors(containerColor = Color(0xFF1565C0)),
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text("🔊  Listen Again", color = Color.White, fontWeight = FontWeight.Bold)
+                Text("🔊  Listen Again", color = Color.White, fontWeight = FontWeight.SemiBold)
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
                 OutlinedButton(
-                    onClick = onTryAgain,
-                    colors  = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                    onClick  = onTryAgain,
+                    colors   = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
                     modifier = Modifier.weight(1f),
-                ) {
-                    Text("🔄  Try Again")
-                }
+                ) { Text("🔄  Try Again") }
+
                 Button(
-                    onClick = onSkip,
-                    colors  = ButtonDefaults.buttonColors(containerColor = Color.White),
+                    onClick  = onSkip,
+                    colors   = ButtonDefaults.buttonColors(containerColor = Color(0xFF424242)),
                     modifier = Modifier.weight(1f),
-                ) {
-                    Text("⏭  Skip", color = Color.Black)
-                }
+                ) { Text("⏭  Skip", color = Color.White) }
             }
         }
     }
 }
 
 @Composable
-private fun LabeledText(label: String, text: String, color: Color) {
+private fun MiniLabel(label: String, text: String, color: Color) {
     Column {
-        Text(label, fontSize = 11.sp, color = Color.White.copy(alpha = 0.45f))
-        Text(text,  fontSize = 15.sp, color = color, fontWeight = FontWeight.Medium)
+        Text(label, fontSize = 10.sp, color = Color.White.copy(alpha = 0.4f))
+        Text(text,  fontSize = 14.sp, color = color, fontWeight = FontWeight.Medium)
     }
 }

@@ -7,17 +7,15 @@ import java.io.File
 
 /**
  * Records user speech via MediaRecorder → M4A file.
- * - Max 8 seconds (MediaRecorder hard limit)
+ * - Max 8 seconds then fires onAutoStop automatically
  * - 16kHz, 64kbps AAC (Groq Whisper sweet-spot)
- * - Call startRecording() → stopRecording() → cleanup() lifecycle.
  */
 class ShadowingRecorder(private val context: Context) {
 
     private var recorder: MediaRecorder? = null
     private var outputFile: File? = null
 
-    /** Returns the output file path — NOT yet complete until stopRecording() is called. */
-    fun startRecording(): File {
+    fun startRecording(onAutoStop: () -> Unit = {}): File {
         outputFile = File(context.cacheDir, "shadow_${System.currentTimeMillis()}.m4a")
 
         recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -33,8 +31,14 @@ class ShadowingRecorder(private val context: Context) {
             setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
             setAudioSamplingRate(16_000)
             setAudioEncodingBitRate(64_000)
-            setMaxDuration(8_000)          // 8 s hard cap
+            setMaxDuration(8_000)
             setOutputFile(outputFile!!.absolutePath)
+            // Auto-fire when 8s max duration reached — no "Done" button needed
+            setOnInfoListener { _, what, _ ->
+                if (what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_DURATION_REACHED) {
+                    onAutoStop()
+                }
+            }
             prepare()
             start()
         }
@@ -42,13 +46,11 @@ class ShadowingRecorder(private val context: Context) {
         return outputFile!!
     }
 
-    /** Stops recording and returns the completed file, or null if not recording. */
     fun stopRecording(): File? {
         return try {
             recorder?.stop()
             outputFile
         } catch (e: RuntimeException) {
-            // stop() throws if called before any data was recorded
             outputFile?.delete()
             null
         } finally {
@@ -59,7 +61,6 @@ class ShadowingRecorder(private val context: Context) {
 
     fun isRecording(): Boolean = recorder != null
 
-    /** Delete the temp file when done. */
     fun cleanup() {
         recorder?.release()
         recorder = null
