@@ -19,13 +19,13 @@ import org.springframework.stereotype.Service;
 /**
  * Persists subtitle data to disk under {cacheDir}/{videoId}/.
  *
- * Cache version: 4. Any cached files with a different version are ignored and
+ * Cache version: 5. Any cached files with a different version are ignored and
  * re-processed.
  */
 @Service
 public class CacheService {
 
-    private static final int CACHE_VERSION = 4;
+    private static final int CACHE_VERSION = 5;
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Type CUE_LIST_TYPE = new TypeToken<List<Cue>>() {}.getType();
 
