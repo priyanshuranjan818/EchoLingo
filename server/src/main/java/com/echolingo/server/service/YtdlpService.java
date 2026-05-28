@@ -11,6 +11,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -19,8 +21,10 @@ import org.springframework.stereotype.Service;
 public class YtdlpService {
 
     private static final String COOKIES_PATH = "/app/cookies.txt";
+    private static final long STREAM_URL_TTL_MS = TimeUnit.MINUTES.toMillis(10);
 
     private final AppConfig config;
+    private final Map<String, CachedStreamUrl> streamUrlCache = new ConcurrentHashMap<>();
 
     public YtdlpService(AppConfig config) {
         this.config = config;
@@ -28,18 +32,27 @@ public class YtdlpService {
 
     public String resolveStreamUrl(String videoId) {
         validateVideoId(videoId);
+        CachedStreamUrl cached = streamUrlCache.get(videoId);
+        if (cached != null && !cached.isExpired()) {
+            return cached.url();
+        }
+
         List<String> args = new ArrayList<>(List.of(
                 config.ytdlpPath(),
                 "-g",
-                "-f", "best[ext=mp4]/best",
+                "--no-playlist",
+                "-f", "best[protocol=https][ext=mp4][vcodec^=avc1][acodec^=mp4a]/"
+                        + "best[protocol=https][ext=mp4]/best[ext=mp4]/best",
                 "https://www.youtube.com/watch?v=" + videoId
         ));
         addProxyAndCookies(args);
-        return runAndCapture(args, videoId, "stream URL").lines()
+        String streamUrl = runAndCapture(args, videoId, "stream URL").lines()
                 .filter(l -> l.startsWith("http://") || l.startsWith("https://"))
                 .findFirst()
                 .orElseThrow(() -> new AppError(HttpStatus.BAD_GATEWAY,
                         "yt-dlp did not return a playable stream URL."));
+        streamUrlCache.put(videoId, new CachedStreamUrl(streamUrl, System.currentTimeMillis() + STREAM_URL_TTL_MS));
+        return streamUrl;
     }
 
     public List<Cue> fetchSubtitles(String videoId, String lang, VttParser vttParser) {
@@ -195,5 +208,11 @@ public class YtdlpService {
                  .sorted(java.util.Comparator.reverseOrder())
                  .forEach(p -> { try { Files.delete(p); } catch (IOException ignored) {} });
         } catch (IOException ignored) {}
+    }
+
+    private record CachedStreamUrl(String url, long expiresAtMs) {
+        boolean isExpired() {
+            return System.currentTimeMillis() >= expiresAtMs;
+        }
     }
 }

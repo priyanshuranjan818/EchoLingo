@@ -38,10 +38,13 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import com.echolingo.app.data.api.ApiFactory
-import com.echolingo.app.data.api.toDomain
 import com.echolingo.app.data.api.toDomain
 import com.echolingo.app.data.preferences.AppSettings
 import com.echolingo.app.data.preferences.SettingsRepository
@@ -69,7 +72,14 @@ fun PlayerScreen(
     val context = LocalContext.current
     val scope   = rememberCoroutineScope()
     val settings by settingsRepository.settings.collectAsState(initial = AppSettings())
-    val player  = remember { ExoPlayer.Builder(context).build() }
+    val player  = remember {
+        val httpDataSourceFactory = DefaultHttpDataSource.Factory()
+            .setAllowCrossProtocolRedirects(true)
+            .setUserAgent("EchoLingo/1.0")
+        ExoPlayer.Builder(context)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(httpDataSourceFactory))
+            .build()
+    }
 
     // --- Subtitle state ---
     var sourceCues   by remember { mutableStateOf<List<Cue>>(emptyList()) }
@@ -91,6 +101,20 @@ fun PlayerScreen(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) shadowingOn = true
+    }
+
+    DisposableEffect(player) {
+        val listener = object : Player.Listener {
+            override fun onPlayerError(error: PlaybackException) {
+                status = error.cause?.message ?: error.message ?: "Could not play video stream"
+            }
+        }
+        player.addListener(listener)
+        onDispose {
+            player.removeListener(listener)
+            recorder.cleanup()
+            player.release()
+        }
     }
 
     // --- Load video ---
@@ -135,13 +159,6 @@ fun PlayerScreen(
             }
 
             delay(100)
-        }
-    }
-
-    DisposableEffect(player) {
-        onDispose {
-            recorder.cleanup()
-            player.release()
         }
     }
 
@@ -312,4 +329,3 @@ fun PlayerScreen(
         )
     }
 }
-
