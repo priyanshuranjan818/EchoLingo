@@ -45,7 +45,14 @@ public class TranscribeController {
         }
 
         try {
-            String transcript = groqService.transcribeAudio(tempFile.toString(), req.lang());
+            // groqService.transcribeAudio() returns List<Cue> with real Whisper timestamps.
+            // The shadowing endpoint only needs the plain text for similarity scoring —
+            // join all segment texts into a single string.
+            String transcript = groqService.transcribeAudio(tempFile.toString(), req.lang())
+                    .stream()
+                    .map(cue -> cue.text().trim())
+                    .filter(t -> !t.isBlank())
+                    .collect(java.util.stream.Collectors.joining(" "));
             return ResponseEntity.ok(new TranscribeResponse(transcript));
         } finally {
             try {
