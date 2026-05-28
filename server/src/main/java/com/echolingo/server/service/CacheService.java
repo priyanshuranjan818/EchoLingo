@@ -19,13 +19,16 @@ import org.springframework.stereotype.Service;
 /**
  * Persists subtitle data to disk under {cacheDir}/{videoId}/.
  *
- * Cache version: 5. Any cached files with a different version are ignored and
+ * Cache version: 6. Any cached files with a different version are ignored and
  * re-processed.
+ *
+ * v6 — Groq Whisper path now uses response_format=verbose_json (real timestamps).
+ *      Old v5 entries generated with the fake word-count heuristic are invalid.
  */
 @Service
 public class CacheService {
 
-    private static final int CACHE_VERSION = 5;
+    private static final int CACHE_VERSION = 6;
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Type CUE_LIST_TYPE = new TypeToken<List<Cue>>() {}.getType();
 

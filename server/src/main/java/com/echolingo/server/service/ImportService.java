@@ -56,9 +56,11 @@ public class ImportService {
         String videoId = extractVideoId(url);
         log.info("importVideo: videoId={}", videoId);
 
+        // ── Memory cache ─────────────────────────────────────────────────────
         VideoBundle warm = memoryCache.get(videoId);
         if (warm != null) return withCached(warm.meta(), true);
 
+        // ── Disk cache ────────────────────────────────────────────────────────
         var diskCached = cacheService.read(videoId);
         if (diskCached.isPresent()) {
             var b = diskCached.get();
@@ -66,7 +68,7 @@ public class ImportService {
             return withCached(b.meta(), true);
         }
 
-        // 1. Try YouTube page scrape for caption URLs
+        // ── 1. YouTube page scrape for caption URLs + metadata ────────────────
         CaptionsService.PageData page = captionsService.fetchPageData(videoId);
         log.info("captionTracks found: {}", page.captionTrackUrls().keySet());
 
@@ -76,27 +78,35 @@ public class ImportService {
         String deVttUrl = page.captionTrackUrls().get(SOURCE_LANG);
 
         if (deVttUrl != null && !deVttUrl.isBlank()) {
-            // 2a. YouTube captions available
+            // ── 2a. YouTube captions (fastest path — no audio download) ────────
             log.info("Using YouTube captions for DE");
             String vtt = captionsService.fetchVtt(deVttUrl);
             sourceCues = vttParser.parse(vtt);
             deSource = "youtube_captions";
         } else {
-            // 2b. Try yt-dlp subtitle download
-            log.info("No YouTube captions, trying yt-dlp subtitle download...");
+            // ── 2b. yt-dlp subtitle download ──────────────────────────────────
+            log.info("No YouTube captions, trying yt-dlp subtitle download…");
             sourceCues = ytdlpService.fetchSubtitles(videoId, SOURCE_LANG, vttParser);
             deSource = "ytdlp";
 
             if (sourceCues.isEmpty()) {
-                // 2c. Last resort: download audio + Groq Whisper
-                log.info("yt-dlp subtitles empty, falling back to Groq Whisper transcription...");
+                // ── 2c. Last resort: download audio + Groq Whisper ────────────
+                //
+                // IMPORTANT: groqService.transcribeAudio() uses response_format=verbose_json
+                // which returns real per-segment timestamps from Whisper's alignment model.
+                // This gives accurate start/end times for every subtitle cue, enabling
+                // correct subtitle–audio sync on the Android player.
+                //
+                // DO NOT revert to response_format=text — that returns a plain-text blob with
+                // no timestamps, which would require fake word-count heuristics that are
+                // wildly inaccurate and cause subtitles to be completely out of sync.
+                log.info("yt-dlp subtitles empty, falling back to Groq Whisper transcription…");
                 Path audioPath = null;
                 try {
                     audioPath = ytdlpService.downloadAudio(videoId);
                     log.info("Audio downloaded to: {}", audioPath);
-                    String transcript = groqService.transcribeAudio(audioPath.toString(), SOURCE_LANG);
-                    log.info("Whisper transcript length: {} chars", transcript.length());
-                    sourceCues = transcriptToCues(transcript);
+                    sourceCues = groqService.transcribeAudio(audioPath.toString(), SOURCE_LANG);
+                    log.info("Groq Whisper returned {} timed cues", sourceCues.size());
                     deSource = "groq_whisper";
                 } catch (Exception e) {
                     log.error("Groq Whisper fallback failed: {}", e.getMessage());
@@ -122,6 +132,7 @@ public class ImportService {
 
         log.info("Got {} DE cues via {}", sourceCues.size(), deSource);
 
+        // ── 3. English cues ───────────────────────────────────────────────────
         String enSource;
         List<Cue> transCues;
 
@@ -134,6 +145,7 @@ public class ImportService {
             enSource = "google_translate";
         }
 
+        // ── 4. Score + persist ────────────────────────────────────────────────
         ScoringEngine.Scores scores = scoringEngine.computeAllScores(
                 sourceCues, transCues, page.durationSec(), enSource);
 
@@ -158,22 +170,6 @@ public class ImportService {
     public List<Cue> getSubtitles(String videoId, String lang) {
         VideoBundle bundle = getBundle(videoId);
         return TARGET_LANG.equalsIgnoreCase(lang) ? bundle.translation() : bundle.source();
-    }
-
-    // Convert plain Whisper transcript text into timed cues (~7 words each, 3s apart)
-    private static List<Cue> transcriptToCues(String transcript) {
-        String[] words = transcript.trim().split("\\s+");
-        List<Cue> cues = new java.util.ArrayList<>();
-        int wordsPerCue = 7;
-        double secPerCue = 3.0;
-        for (int i = 0; i < words.length; i += wordsPerCue) {
-            int end = Math.min(i + wordsPerCue, words.length);
-            String text = String.join(" ", java.util.Arrays.copyOfRange(words, i, end));
-            long startMs = (long) (i / wordsPerCue * secPerCue * 1000);
-            long endMs   = startMs + (long) (secPerCue * 1000);
-            cues.add(new Cue(i / wordsPerCue, (double) startMs / 1000.0, (double) endMs / 1000.0, text));
-        }
-        return cues;
     }
 
     private VideoBundle getBundle(String videoId) {

@@ -158,7 +158,7 @@ fun PlayerScreen(
                 if (cur != null) lastCueForShadow = cur
             }
 
-            delay(100)
+            delay(50)   // 50 ms → worst-case subtitle lag is half a frame
         }
     }
 
