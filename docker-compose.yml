@@ -1,7 +1,7 @@
 services:
   echolingo-server:
     build:
-      context: .                      # repo root (Dockerfile uses COPY server/...)
+      context: .
       dockerfile: server/Dockerfile
     image: echolingo-server:latest
     container_name: echolingo-server
@@ -11,13 +11,14 @@ services:
     environment:
       PORT: "3001"
       ECHOLINGO_CACHE_DIR: /app/cache
-      ECHOLINGO_YTDLP_PATH: /usr/local/bin/yt-dlp
-      ECHOLINGO_YTDLP_TIMEOUT_MS: "60000"
-      ECHOLINGO_YTDLP_PROXY_LIST: ""          # comma-separated proxies, or leave blank
-      ECHOLINGO_DEEPL_KEY: ""                 # optional DeepL key
-      ECHOLINGO_GROQ_API_KEY: "${GROQ_API_KEY}"  # loaded from .env file
+      ECHOLINGO_YTDLP_PATH: yt-dlp
+      ECHOLINGO_YTDLP_TIMEOUT_MS: "120000"
+      ECHOLINGO_YTDLP_PROXY_LIST: "${ECHOLINGO_YTDLP_PROXY_LIST}"
+      ECHOLINGO_DEEPL_KEY: ""
+      ECHOLINGO_GROQ_API_KEY: "${GROQ_API_KEY}"
     volumes:
-      - echolingo-cache:/app/cache            # subtitle cache survives container restarts
+      - echolingo-cache:/app/cache
+      - ./cookies.txt:/app/cookies.txt
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3001/api/health"]
       interval: 30s

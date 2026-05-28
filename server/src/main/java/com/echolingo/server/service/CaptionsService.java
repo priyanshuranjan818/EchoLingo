@@ -1,37 +1,28 @@
 package com.echolingo.server.service;
 
+import com.echolingo.server.config.AppConfig;
 import com.echolingo.server.exception.AppError;
-import com.echolingo.server.model.Cue;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import java.io.IOException;
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
+import java.net.InetSocketAddress;
+import java.net.Proxy;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import okhttp3.Credentials;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
-/**
- * Scrapes the YouTube watch page to extract:
- *  - Caption track URLs (VTT) for 'de' and 'en'
- *  - Video title and duration
- *
- * Also fetches and returns the raw VTT text from a given track URL.
- */
 @Service
 public class CaptionsService {
 
-    // Extracts ytInitialPlayerResponse JSON from the page script tag
     private static final Pattern PLAYER_RESPONSE = Pattern.compile(
             "ytInitialPlayerResponse\\s*=\\s*(\\{.+?\\})(?=;\\s*(?:var|const|let|</script))",
             Pattern.DOTALL
@@ -42,19 +33,42 @@ public class CaptionsService {
 
     private final OkHttpClient httpClient;
 
-    public CaptionsService() {
-        this.httpClient = new OkHttpClient.Builder()
-                .followRedirects(true)
-                .build();
-    }
+    public CaptionsService(AppConfig config) {
+        OkHttpClient.Builder builder = new OkHttpClient.Builder().followRedirects(true);
 
-    // ---- Public API ---------------------------------------------------------
+        String proxyList = config.ytdlpProxyList();
+        if (proxyList != null && !proxyList.isBlank()) {
+            String[] proxies = proxyList.split(",");
+            String proxyUrl = proxies[0].trim(); // use first proxy
+            // Expected format: http://user:pass@host:port
+            try {
+                java.net.URI uri = new java.net.URI(proxyUrl);
+                String host = uri.getHost();
+                int port = uri.getPort();
+                InetSocketAddress proxyAddr = new InetSocketAddress(host, port);
+                builder.proxy(new Proxy(Proxy.Type.HTTP, proxyAddr));
+                String userInfo = uri.getUserInfo();
+                if (userInfo != null) {
+                    String[] parts = userInfo.split(":", 2);
+                    String user = parts[0];
+                    String pass = parts.length > 1 ? parts[1] : "";
+                    builder.proxyAuthenticator((route, response) ->
+                        response.request().newBuilder()
+                            .header("Proxy-Authorization", Credentials.basic(user, pass))
+                            .build()
+                    );
+                }
+            } catch (Exception ignored) {}
+        }
+
+        this.httpClient = builder.build();
+    }
 
     public record PageData(
             String title,
             int durationSec,
             String thumbnailUrl,
-            Map<String, String> captionTrackUrls  // lang code → VTT URL (may be empty)
+            Map<String, String> captionTrackUrls
     ) {}
 
     public PageData fetchPageData(String videoId) {
@@ -64,7 +78,7 @@ public class CaptionsService {
 
     public String fetchVtt(String vttUrl) {
         Request req = new Request.Builder()
-                .url(vttUrl + "&fmt=vtt") // ask for VTT format explicitly
+                .url(vttUrl + "&fmt=vtt")
                 .header("User-Agent", "Mozilla/5.0 (compatible; EchoLingo/1.0)")
                 .build();
         try (Response resp = httpClient.newCall(req).execute()) {
@@ -75,8 +89,6 @@ public class CaptionsService {
         }
     }
 
-    // ---- Parsing ------------------------------------------------------------
-
     private PageData parsePageData(String videoId, String html) {
         Matcher m = PLAYER_RESPONSE.matcher(html);
         if (!m.find()) {
@@ -84,37 +96,31 @@ public class CaptionsService {
                     "Could not parse YouTube page for video: " + videoId);
         }
 
-        // The regex might grab slightly more than needed; parse greedily
         JsonObject root = null;
         String candidate = m.group(1);
-        // Try successively shorter substrings if Gson chokes (YouTube embeds extra JS after)
         for (int trim = 0; trim <= 200; trim++) {
             try {
                 root = GSON.fromJson(candidate.substring(0, candidate.length() - trim), JsonObject.class);
                 break;
-            } catch (Exception ignored) { /* trim more */ }
+            } catch (Exception ignored) {}
         }
         if (root == null) {
             throw new AppError(HttpStatus.BAD_GATEWAY, "Failed to parse ytInitialPlayerResponse for " + videoId);
         }
 
-        // Title
         String title = videoId;
         try {
             title = root.getAsJsonObject("videoDetails").get("title").getAsString();
         } catch (Exception ignored) {}
 
-        // Duration
         int duration = 0;
         try {
             duration = Integer.parseInt(
                     root.getAsJsonObject("videoDetails").get("lengthSeconds").getAsString());
         } catch (Exception ignored) {}
 
-        // Thumbnail
         String thumb = "https://img.youtube.com/vi/" + videoId + "/hqdefault.jpg";
 
-        // Caption tracks
         Map<String, String> tracks = new LinkedHashMap<>();
         try {
             JsonArray trackList = root
@@ -126,10 +132,13 @@ public class CaptionsService {
                 JsonObject track = el.getAsJsonObject();
                 String lang = track.get("languageCode").getAsString();
                 String baseUrl = track.get("baseUrl").getAsString();
-                // Keep the first track per language (YouTube may list multiple)
                 tracks.putIfAbsent(lang, baseUrl);
+                if (lang.contains("-")) {
+                    String baseLang = lang.split("-")[0];
+                    tracks.putIfAbsent(baseLang, baseUrl);
+                }
             }
-        } catch (Exception ignored) {} // video has no captions at all
+        } catch (Exception ignored) {}
 
         return new PageData(title, duration, thumb, tracks);
     }

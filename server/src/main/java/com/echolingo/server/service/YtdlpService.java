@@ -18,13 +18,13 @@ import org.springframework.stereotype.Service;
 @Service
 public class YtdlpService {
 
+    private static final String COOKIES_PATH = "/app/cookies.txt";
+
     private final AppConfig config;
 
     public YtdlpService(AppConfig config) {
         this.config = config;
     }
-
-    // ---- Stream URL ---------------------------------------------------------
 
     public String resolveStreamUrl(String videoId) {
         validateVideoId(videoId);
@@ -34,6 +34,7 @@ public class YtdlpService {
                 "-f", "best[ext=mp4]/best",
                 "https://www.youtube.com/watch?v=" + videoId
         ));
+        addProxyAndCookies(args);
         return runAndCapture(args, videoId, "stream URL").lines()
                 .filter(l -> l.startsWith("http://") || l.startsWith("https://"))
                 .findFirst()
@@ -41,14 +42,6 @@ public class YtdlpService {
                         "yt-dlp did not return a playable stream URL."));
     }
 
-    // ---- Subtitle download (fallback) ---------------------------------------
-
-    /**
-     * Downloads VTT subtitles for the given video + language via yt-dlp,
-     * then parses them with the provided VttParser.
-     * Returns an empty list (not an exception) if no subtitles are found,
-     * so the caller can try the next fallback.
-     */
     public List<Cue> fetchSubtitles(String videoId, String lang, VttParser vttParser) {
         validateVideoId(videoId);
         Path tempDir;
@@ -69,25 +62,23 @@ public class YtdlpService {
                 "--no-overwrites",
                 "https://www.youtube.com/watch?v=" + videoId
         ));
+        addProxyAndCookies(args);
 
         try {
-            runAndCapture(args, videoId, "subtitle download"); // run, ignore stdout
+            runAndCapture(args, videoId, "subtitle download");
         } catch (AppError e) {
             cleanupDir(tempDir);
-            return List.of(); // yt-dlp failed — caller tries next fallback
+            return List.of();
         }
 
-        // Find the generated .vtt file
         try {
             var vttFile = Files.list(tempDir)
                     .filter(p -> p.toString().endsWith(".vtt"))
                     .findFirst();
-
             if (vttFile.isEmpty()) {
                 cleanupDir(tempDir);
                 return List.of();
             }
-
             String vttText = Files.readString(vttFile.get(), StandardCharsets.UTF_8);
             cleanupDir(tempDir);
             return vttParser.parse(vttText);
@@ -97,15 +88,71 @@ public class YtdlpService {
         }
     }
 
-    // ---- Internals ----------------------------------------------------------
+    /**
+     * Downloads audio as m4a to a temp file and returns its path.
+     * Caller is responsible for deleting the file after use.
+     */
+    public Path downloadAudio(String videoId) {
+        validateVideoId(videoId);
+        Path tempDir;
+        try {
+            tempDir = Files.createTempDirectory("echolingo_audio_");
+        } catch (IOException e) {
+            throw new AppError(HttpStatus.INTERNAL_SERVER_ERROR,
+                    "Could not create temp dir for audio download.");
+        }
+
+        String outputTemplate = tempDir.resolve("%(id)s.%(ext)s").toString();
+        List<String> args = new ArrayList<>(List.of(
+                config.ytdlpPath(),
+                "-f", "bestaudio[ext=m4a]/bestaudio/best",
+                "-x",
+                "--audio-format", "mp3",
+                "--audio-quality", "0",
+                "--output", outputTemplate,
+                "https://www.youtube.com/watch?v=" + videoId
+        ));
+        addProxyAndCookies(args);
+
+        runAndCapture(args, videoId, "audio download");
+
+        try {
+            return Files.list(tempDir)
+                    .filter(p -> p.toString().endsWith(".mp3") || p.toString().endsWith(".m4a")
+                            || p.toString().endsWith(".webm") || p.toString().endsWith(".ogg"))
+                    .findFirst()
+                    .orElseThrow(() -> new AppError(HttpStatus.BAD_GATEWAY,
+                            "yt-dlp did not produce an audio file for video: " + videoId));
+        } catch (IOException e) {
+            throw new AppError(HttpStatus.INTERNAL_SERVER_ERROR,
+                    "Could not list audio temp dir: " + e.getMessage());
+        }
+    }
+
+    private void addProxyAndCookies(List<String> args) {
+        int insertAt = args.size() - 1;
+
+        if (java.nio.file.Files.exists(java.nio.file.Path.of(COOKIES_PATH))) {
+            args.add(insertAt, "--cookies");
+            args.add(insertAt + 1, COOKIES_PATH);
+            insertAt += 2;
+        }
+
+        String proxyList = config.ytdlpProxyList();
+        if (proxyList != null && !proxyList.isBlank()) {
+            String proxy = proxyList.split(",")[0].trim();
+            args.add(insertAt, "--proxy");
+            args.add(insertAt + 1, proxy);
+        }
+    }
 
     private String runAndCapture(List<String> args, String videoId, String operation) {
         ProcessBuilder pb = new ProcessBuilder(args);
         pb.redirectErrorStream(true);
         try {
             Process proc = pb.start();
-            boolean finished = proc.waitFor(config.ytdlpTimeoutMs(), TimeUnit.MILLISECONDS);
             String output = readAll(proc);
+            boolean finished = proc.waitFor(config.ytdlpTimeoutMs(), TimeUnit.MILLISECONDS);
             if (!finished) {
                 proc.destroyForcibly();
                 throw new AppError(HttpStatus.GATEWAY_TIMEOUT,
@@ -113,12 +160,12 @@ public class YtdlpService {
             }
             if (proc.exitValue() != 0) {
                 throw new AppError(HttpStatus.BAD_GATEWAY,
-                        "yt-dlp failed during " + operation + " (exit " + proc.exitValue() + ").");
+                        "yt-dlp failed during " + operation + " (exit " + proc.exitValue() + "): " + output);
             }
             return output;
         } catch (IOException e) {
             throw new AppError(HttpStatus.BAD_GATEWAY,
-                    "Could not start yt-dlp. Check ECHOLINGO_YTDLP_PATH: " + e.getMessage());
+                    "Could not start yt-dlp: " + e.getMessage());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new AppError(HttpStatus.INTERNAL_SERVER_ERROR,
@@ -150,4 +197,3 @@ public class YtdlpService {
         } catch (IOException ignored) {}
     }
 }
-
