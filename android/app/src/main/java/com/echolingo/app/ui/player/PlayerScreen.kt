@@ -6,7 +6,9 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -60,6 +62,7 @@ import com.echolingo.app.data.preferences.SettingsRepository
 import com.echolingo.app.data.repository.HistoryRepository
 import com.echolingo.app.domain.model.Cue
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -118,6 +121,8 @@ fun PlayerScreen(
     var isSeeking      by remember { mutableStateOf(false) }
     var seekFraction   by remember { mutableFloatStateOf(0f) }
     var seekFlash      by remember { mutableStateOf<SeekFlash?>(null) }
+    // True while the user is holding their finger down — video is temporarily paused
+    var holdPaused     by remember { mutableStateOf(false) }
 
     // ── Controls visibility ───────────────────────────────────────────────────
     var controlsVisible by remember { mutableStateOf(false) }
@@ -222,25 +227,70 @@ fun PlayerScreen(
             modifier = Modifier.fillMaxSize(),
         )
 
-        // ── Tap / double-tap gesture layer ────────────────────────────────
-        // Sits below the subtitle overlay so subtitle drags don't trigger pause.
-        // onTap   → pause / resume
-        // onDoubleTap left half  → ◀◀ 10 s
-        // onDoubleTap right half → ▶▶ 20 s
+        // ── Gesture layer: hold / single-tap / double-tap ────────────────
+        //
+        //  HOLD  (finger down > 400 ms) → pause while held, resume on release
+        //  DOUBLE TAP left              → ◀◀ −10 s
+        //  DOUBLE TAP right             → ▶▶ +20 s
+        //  SINGLE TAP                   → toggle pause / resume
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .pointerInput(Unit) {
-                    detectTapGestures(
-                        onTap = {
-                            if (player.isPlaying) player.pause() else player.play()
-                        },
-                        onDoubleTap = { offset ->
-                            if (offset.x < maxWidthPx / 2f) seekBack() else seekForward()
-                        },
-                    )
+                    val longMs  = viewConfiguration.longPressTimeoutMillis
+                    val doublMs = viewConfiguration.doubleTapTimeoutMillis
+                    awaitEachGesture {
+                        val down = awaitFirstDown()
+                        val downPos = down.position
+
+                        // Phase 1: wait up to longPressTimeout for finger to lift
+                        val quickUp = withTimeoutOrNull(longMs) { waitForUpOrCancellation() }
+
+                        if (quickUp == null) {
+                            // ── HOLD ──────────────────────────────────────
+                            val wasPlaying = player.isPlaying
+                            if (wasPlaying) {
+                                player.pause()
+                                holdPaused = true
+                            }
+                            waitForUpOrCancellation()   // block until finger lifts
+                            if (wasPlaying) {
+                                player.play()
+                                holdPaused = false
+                            }
+                        } else {
+                            // Quick lift — check if a second tap follows (double tap)
+                            val secondDown = withTimeoutOrNull(doublMs) { awaitFirstDown() }
+                            if (secondDown != null) {
+                                // ── DOUBLE TAP ────────────────────────────
+                                waitForUpOrCancellation()
+                                if (downPos.x < maxWidthPx / 2f) seekBack() else seekForward()
+                            } else {
+                                // ── SINGLE TAP ────────────────────────────
+                                if (player.isPlaying) player.pause() else player.play()
+                            }
+                        }
+                    }
                 },
         )
+
+        // ── Hold-to-pause indicator ───────────────────────────────────────
+        if (holdPaused) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(50))
+                    .padding(horizontal = 24.dp, vertical = 12.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    "⏸  Holding…",
+                    color      = Color.White,
+                    fontSize   = 16.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+        }
 
         // ── Status text ───────────────────────────────────────────────────
         if (status.isNotBlank()) {
