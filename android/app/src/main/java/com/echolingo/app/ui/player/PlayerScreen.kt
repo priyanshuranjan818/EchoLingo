@@ -6,20 +6,23 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -37,7 +40,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
@@ -61,6 +63,21 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
+
+// ── Seek flash model ──────────────────────────────────────────────────────────
+private sealed class SeekFlash {
+    data object Back    : SeekFlash()   // ◀◀ 10 s
+    data object Forward : SeekFlash()   // ▶▶ 20 s
+}
+
+// ── Time formatter ─────────────────────────────────────────────────────────────
+private fun formatMs(ms: Long): String {
+    val totalSecs = (ms / 1_000L).coerceAtLeast(0L)
+    val h  = totalSecs / 3600
+    val m  = (totalSecs % 3600) / 60
+    val s  = totalSecs % 60
+    return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%02d:%02d".format(m, s)
+}
 
 @Composable
 fun PlayerScreen(
@@ -86,20 +103,25 @@ fun PlayerScreen(
     }
 
     // ── Subtitle state ────────────────────────────────────────────────────────
-    var sourceCues   by remember { mutableStateOf<List<Cue>>(emptyList()) }
-    var transCues    by remember { mutableStateOf<List<Cue>>(emptyList()) }
-    var activeSource by remember { mutableStateOf<Cue?>(null) }
-    var activeTrans  by remember { mutableStateOf<Cue?>(null) }
-    var positionMs   by remember { mutableLongStateOf(0L) }
-    var status       by remember { mutableStateOf("Loading video...") }
+    var sourceCues     by remember { mutableStateOf<List<Cue>>(emptyList()) }
+    var transCues      by remember { mutableStateOf<List<Cue>>(emptyList()) }
+    var activeSource   by remember { mutableStateOf<Cue?>(null) }
+    var activeTrans    by remember { mutableStateOf<Cue?>(null) }
+    var positionMs     by remember { mutableLongStateOf(0L) }
+    var durationMs     by remember { mutableLongStateOf(0L) }
+    var status         by remember { mutableStateOf("Loading video...") }
 
-    // Local Y offset in pixels — updated instantly on every drag frame for smooth
-    // visual feedback. Persisted to DataStore asynchronously after drag ends.
-    var subtitleYPx by remember { mutableFloatStateOf(-1f) }  // -1 = not yet initialised
+    // Local Y offset for smooth drag (no DataStore latency during drag)
+    var subtitleYPx    by remember { mutableFloatStateOf(-1f) }
 
-    // ── Controls visibility (auto-hides after 3 s) ────────────────────────────
+    // ── Seek state ────────────────────────────────────────────────────────────
+    var isSeeking      by remember { mutableStateOf(false) }
+    var seekFraction   by remember { mutableFloatStateOf(0f) }
+    var seekFlash      by remember { mutableStateOf<SeekFlash?>(null) }
+
+    // ── Controls visibility ───────────────────────────────────────────────────
     var controlsVisible by remember { mutableStateOf(false) }
-    var hideJob         by remember { mutableStateOf<Job?>(null) }
+    var hideJob          by remember { mutableStateOf<Job?>(null) }
 
     fun showControls() {
         controlsVisible = true
@@ -109,14 +131,22 @@ fun PlayerScreen(
             controlsVisible = false
         }
     }
-
     fun toggleControls() {
-        if (controlsVisible) {
-            hideJob?.cancel()
-            controlsVisible = false
-        } else {
-            showControls()
-        }
+        if (controlsVisible) { hideJob?.cancel(); controlsVisible = false }
+        else showControls()
+    }
+
+    // ── Seek helpers ──────────────────────────────────────────────────────────
+    fun seekBack() {
+        player.seekTo((positionMs - 10_000L).coerceAtLeast(0L))
+        seekFlash = SeekFlash.Back
+        scope.launch { delay(700); seekFlash = null }
+    }
+    fun seekForward() {
+        val target = (positionMs + 20_000L).let { if (durationMs > 0) it.coerceAtMost(durationMs) else it }
+        player.seekTo(target)
+        seekFlash = SeekFlash.Forward
+        scope.launch { delay(700); seekFlash = null }
     }
 
     DisposableEffect(player) {
@@ -151,10 +181,14 @@ fun PlayerScreen(
         }
     }
 
-    // ── Position polling ──────────────────────────────────────────────────────
+    // ── Position / duration polling ───────────────────────────────────────────
     LaunchedEffect(player, sourceCues, transCues) {
         while (true) {
-            positionMs   = player.currentPosition
+            if (!isSeeking) {
+                positionMs   = player.currentPosition
+                val dur      = player.duration
+                if (dur > 0) durationMs = dur
+            }
             activeSource = findActiveCue(sourceCues, positionMs)
             activeTrans  = findActiveCue(transCues,  positionMs)
             delay(50)
@@ -165,33 +199,20 @@ fun PlayerScreen(
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black)
-            // Tap anywhere on the video = toggle pause / resume.
-            // Uses awaitEachGesture so that a drag starting on the subtitle
-            // overlay (which consumes the pointer) does NOT trigger a pause.
-            .pointerInput(Unit) {
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
-                    // Wait to see if this becomes a tap (no significant movement)
-                    val upOrCancel = waitForUpOrCancellation()
-                    if (upOrCancel != null && !down.isConsumed) {
-                        // Pointer was not consumed by a child (e.g. subtitle drag)
-                        if (player.isPlaying) player.pause() else player.play()
-                    }
-                }
-            },
+            .background(Color.Black),
     ) {
         val maxHeightPx = constraints.maxHeight.toFloat().coerceAtLeast(1f)
+        val maxWidthPx  = constraints.maxWidth.toFloat().coerceAtLeast(1f)
 
-        // Initialise local Y from saved setting on first composition
+        // Initialise subtitle Y from saved setting on first composition
         if (subtitleYPx < 0f) subtitleYPx = maxHeightPx * settings.subtitleYPercent
 
-        // ── ExoPlayer (no built-in controls — we own all touch) ───────────
+        // ── ExoPlayer (no built-in controls) ─────────────────────────────
         AndroidView(
             factory = { ctx ->
                 PlayerView(ctx).apply {
                     this.player   = player
-                    useController = false   // custom controls only
+                    useController = false
                     layoutParams  = ViewGroup.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT,
@@ -201,18 +222,65 @@ fun PlayerScreen(
             modifier = Modifier.fillMaxSize(),
         )
 
-        // Status text
+        // ── Tap / double-tap gesture layer ────────────────────────────────
+        // Sits below the subtitle overlay so subtitle drags don't trigger pause.
+        // onTap   → pause / resume
+        // onDoubleTap left half  → ◀◀ 10 s
+        // onDoubleTap right half → ▶▶ 20 s
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onTap = {
+                            if (player.isPlaying) player.pause() else player.play()
+                        },
+                        onDoubleTap = { offset ->
+                            if (offset.x < maxWidthPx / 2f) seekBack() else seekForward()
+                        },
+                    )
+                },
+        )
+
+        // ── Status text ───────────────────────────────────────────────────
         if (status.isNotBlank()) {
             Text(
                 text     = status,
                 color    = Color.White,
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .padding(24.dp),
+                modifier = Modifier.align(Alignment.Center).padding(24.dp),
             )
         }
 
-        // ── Subtitle overlay (draggable, vertical only) ───────────────────
+        // ── Seek flash indicator ──────────────────────────────────────────
+        seekFlash?.let { flash ->
+            Box(
+                modifier = Modifier
+                    .align(
+                        if (flash is SeekFlash.Back) Alignment.CenterStart
+                        else Alignment.CenterEnd
+                    )
+                    .padding(horizontal = 28.dp)
+                    .background(Color.White.copy(alpha = 0.18f), RoundedCornerShape(50))
+                    .padding(horizontal = 20.dp, vertical = 16.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text     = if (flash is SeekFlash.Back) "◀◀" else "▶▶",
+                        color    = Color.White,
+                        fontSize = 26.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        text     = if (flash is SeekFlash.Back) "10s" else "20s",
+                        color    = Color.White,
+                        fontSize = 12.sp,
+                    )
+                }
+            }
+        }
+
+        // ── Subtitle overlay (draggable, vertical) ────────────────────────
         SubtitleOverlay(
             sourceCue  = activeSource,
             transCue   = activeTrans,
@@ -220,12 +288,10 @@ fun PlayerScreen(
             showTrans  = settings.showTrans,
             fontSize   = settings.fontSize,
             onDrag     = { deltaY ->
-                // Update local px immediately (smooth, no DataStore round-trip lag)
                 subtitleYPx = (subtitleYPx + deltaY)
                     .coerceIn(maxHeightPx * 0.05f, maxHeightPx * 0.92f)
             },
             onDragEnd  = {
-                // Persist position once the finger lifts
                 scope.launch {
                     settingsRepository.setSubtitleYPercent(subtitleYPx / maxHeightPx)
                 }
@@ -235,15 +301,27 @@ fun PlayerScreen(
                 .offset { IntOffset(0, subtitleYPx.roundToInt()) },
         )
 
-        // ── Controls panel (fades in/out, auto-hides after 3 s) ──────────
+        // ── Thin progress bar — ALWAYS visible at bottom ──────────────────
+        if (durationMs > 0) {
+            LinearProgressIndicator(
+                progress    = { positionMs.toFloat() / durationMs.toFloat() },
+                modifier    = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(3.dp),
+                color       = Color(0xFF2196F3),
+                trackColor  = Color.White.copy(alpha = 0.18f),
+            )
+        }
+
+        // ── Controls overlay (fades in/out, auto-hides after 3 s) ─────────
         AnimatedVisibility(
             visible  = controlsVisible,
             enter    = fadeIn(),
             exit     = fadeOut(),
             modifier = Modifier.fillMaxSize(),
         ) {
-            // Intercept all taps inside the controls panel so they don't
-            // toggle play/pause on the background layer.
+            // Intercept all taps inside the panel so they don't toggle pause
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -254,20 +332,14 @@ fun PlayerScreen(
                     modifier = Modifier
                         .align(Alignment.TopStart)
                         .fillMaxWidth()
-                        .background(
-                            Color.Black.copy(alpha = 0.55f),
-                            RoundedCornerShape(bottomStart = 0.dp, bottomEnd = 0.dp),
-                        )
+                        .background(Color.Black.copy(alpha = 0.55f))
                         .padding(horizontal = 8.dp, vertical = 6.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment     = Alignment.CenterVertically,
                 ) {
-                    // Back button
                     TextButton(onClick = onBack) {
                         Text("← Back", color = Color.White, fontWeight = FontWeight.SemiBold)
                     }
-
-                    // CC toggles
                     PlayerControls(
                         showSource     = settings.showSource,
                         showTrans      = settings.showTrans,
@@ -280,34 +352,76 @@ fun PlayerScreen(
                     )
                 }
 
-                // ── Reset subtitle position ───────────────────────────────
-                TextButton(
-                    onClick  = {
-                        subtitleYPx = maxHeightPx * 0.78f
-                        scope.launch { settingsRepository.setSubtitleYPercent(0.78f) }
-                    },
+                // ── Bottom: seekbar + time ────────────────────────────────
+                Column(
                     modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(12.dp),
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .background(Color.Black.copy(alpha = 0.55f))
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
                 ) {
-                    Text(
-                        "Reset Subtitles",
-                        color    = Color.White.copy(alpha = 0.80f),
-                        fontSize = 12.sp,
-                    )
+                    if (durationMs > 0) {
+                        val fraction = if (isSeeking) seekFraction
+                                       else positionMs.toFloat() / durationMs.toFloat()
+
+                        Slider(
+                            value               = fraction.coerceIn(0f, 1f),
+                            onValueChange       = { isSeeking = true; seekFraction = it },
+                            onValueChangeFinished = {
+                                player.seekTo((seekFraction * durationMs).toLong())
+                                isSeeking = false
+                                showControls()   // reset the 3 s auto-hide timer
+                            },
+                            colors = SliderDefaults.colors(
+                                thumbColor       = Color(0xFF2196F3),
+                                activeTrackColor = Color(0xFF2196F3),
+                                inactiveTrackColor = Color.White.copy(alpha = 0.25f),
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(28.dp),
+                        )
+
+                        // Time labels
+                        Row(
+                            modifier              = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text(
+                                formatMs(if (isSeeking) (seekFraction * durationMs).toLong() else positionMs),
+                                color    = Color.White,
+                                fontSize = 11.sp,
+                            )
+                            Text(
+                                formatMs(durationMs),
+                                color    = Color.White.copy(alpha = 0.7f),
+                                fontSize = 11.sp,
+                            )
+                        }
+                    }
+
+                    // Reset subtitle position
+                    TextButton(
+                        onClick  = {
+                            subtitleYPx = maxHeightPx * 0.78f
+                            scope.launch { settingsRepository.setSubtitleYPercent(0.78f) }
+                        },
+                        modifier = Modifier.align(Alignment.End),
+                    ) {
+                        Text("Reset Subtitles", color = Color.White.copy(alpha = 0.75f), fontSize = 12.sp)
+                    }
                 }
             }
         }
 
-        // ── Settings gear button — always visible in top-right corner ─────
-        // Semi-transparent when controls hidden, bright when visible.
+        // ── Settings gear — always visible in top-right corner ────────────
         Box(
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .padding(10.dp)
                 .size(40.dp)
                 .background(
-                    Color.Black.copy(alpha = if (controlsVisible) 0.65f else 0.35f),
+                    Color.Black.copy(alpha = if (controlsVisible) 0.65f else 0.30f),
                     CircleShape,
                 )
                 .clickable { toggleControls() },
@@ -316,7 +430,7 @@ fun PlayerScreen(
             Text(
                 text     = "⚙",
                 fontSize = 20.sp,
-                color    = Color.White.copy(alpha = if (controlsVisible) 1f else 0.65f),
+                color    = Color.White.copy(alpha = if (controlsVisible) 1f else 0.60f),
             )
         }
     }

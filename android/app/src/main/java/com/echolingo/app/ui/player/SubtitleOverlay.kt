@@ -1,10 +1,7 @@
 package com.echolingo.app.ui.player
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.awaitTouchSlopOrCancellation
-import androidx.compose.foundation.gestures.drag
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,9 +15,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
-import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.TextUnit
@@ -53,33 +48,12 @@ fun SubtitleOverlay(
         modifier = modifier
             .fillMaxWidth()
             .pointerInput(Unit) {
-                // Custom drag handler:
-                //  • Only responds to vertical movement (ignores horizontal)
-                //  • Consumes the pointer so the parent tap handler (pause/resume)
-                //    does NOT fire when the user drags the subtitle
-                //  • Calls onDragEnd when the finger lifts so position is persisted
-                awaitEachGesture {
-                    val down: PointerInputChange = awaitFirstDown(requireUnconsumed = true)
-                    down.consume()
-
-                    // Wait for the user to move past touch slop before claiming the gesture
-                    val drag = awaitTouchSlopOrCancellation(down.id) { change, over ->
-                        // Only claim if mainly vertical movement
-                        if (kotlin.math.abs(over.y) > kotlin.math.abs(over.x)) {
-                            change.consume()
-                        }
-                    }
-
-                    if (drag != null) {
-                        drag(drag.id) { change ->
-                            val dy = change.positionChange().y
-                            if (kotlin.math.abs(dy) > 0f) {
-                                change.consume()
-                                onDrag(dy)
-                            }
-                        }
-                        onDragEnd()
-                    }
+                detectDragGestures(
+                    onDragEnd = onDragEnd,
+                ) { change, dragAmount ->
+                    change.consume()
+                    // Only Y axis — ignore horizontal movement
+                    onDrag(dragAmount.y)
                 }
             }
             .padding(horizontal = 12.dp, vertical = 8.dp),
