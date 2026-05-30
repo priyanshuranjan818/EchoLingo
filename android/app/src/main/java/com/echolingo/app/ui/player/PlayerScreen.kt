@@ -189,9 +189,11 @@ fun PlayerScreen(
                 )
 
                 // ── Hold-to-pause touch listener ──────────────────────────
-                // Returns false so ExoPlayer STILL handles the event normally
-                // (seekbar drag, play/pause tap, double-tap ±10 s — all work).
-                view.setOnTouchListener { _, event ->
+                // KEY: returns true (consumes) on ACTION_UP only when releasing
+                // from a hold, so ExoPlayer's onTouchEvent never runs and never
+                // calls toggleControllerVisibility() — which was causing the
+                // seekbar/top-bar to flash visible on every release.
+                view.setOnTouchListener { v, event ->
                     when (event.actionMasked) {
 
                         MotionEvent.ACTION_DOWN -> {
@@ -200,26 +202,23 @@ fun PlayerScreen(
                             holdJob.value?.cancel()
                             holdJob.value = scope.launch {
                                 delay(HOLD_THRESHOLD_MS)
-                                // Only activate hold if player is actually playing
                                 if (player.isPlaying) {
                                     player.pause()
-                                    // Hide ExoPlayer's controller immediately so
-                                    // nothing appears on screen during hold
                                     playerViewRef.value?.hideController()
                                     isHolding.value = true
                                 }
                             }
+                            false   // let ExoPlayer see ACTION_DOWN (seekbar needs it)
                         }
 
                         MotionEvent.ACTION_MOVE -> {
-                            // Cancel hold if finger moves more than ~8 dp
-                            // (user is probably dragging the seekbar, not holding)
                             val movedX = abs(event.x - downX.floatValue)
                             val movedY = abs(event.y - downY.floatValue)
                             if (movedX > 24f || movedY > 24f) {
                                 holdJob.value?.cancel()
                                 holdJob.value = null
                             }
+                            false   // let ExoPlayer handle seekbar drag
                         }
 
                         MotionEvent.ACTION_UP,
@@ -228,11 +227,18 @@ fun PlayerScreen(
                             holdJob.value = null
                             if (isHolding.value) {
                                 player.play()
-                                isHolding.value  = false
+                                isHolding.value = false
+                                // CONSUME the event — if we returned false here,
+                                // ExoPlayer's onTouchEvent would call
+                                // toggleControllerVisibility() making everything appear.
+                                true
+                            } else {
+                                false   // normal tap: let ExoPlayer toggle controller
                             }
                         }
+
+                        else -> false
                     }
-                    false   // ← let ExoPlayer handle the event as normal
                 }
             },
             modifier = Modifier.fillMaxSize(),
