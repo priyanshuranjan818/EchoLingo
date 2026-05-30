@@ -168,6 +168,10 @@ fun PlayerScreen(
                     this.player   = player
                     useController = true
                     subtitleView?.visibility = View.GONE
+                    // Prevent ExoPlayer from auto-showing the controller when
+                    // player.pause() / player.play() is called programmatically
+                    // (e.g. during hold-to-pause). Tap-to-toggle still works normally.
+                    setControllerAutoShow(false)
                     layoutParams = ViewGroup.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT,
