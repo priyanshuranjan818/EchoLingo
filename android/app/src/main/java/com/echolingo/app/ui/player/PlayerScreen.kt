@@ -95,11 +95,13 @@ fun PlayerScreen(
     var subtitleYPx  by remember { mutableFloatStateOf(-1f) }
 
     // ── Hold-to-pause state ───────────────────────────────────────────────────
-    val isHolding   = remember { mutableStateOf(false) }
-    val holdJob     = remember { mutableStateOf<Job?>(null) }
+    val isHolding      = remember { mutableStateOf(false) }
+    val holdJob        = remember { mutableStateOf<Job?>(null) }
+    // Reference to PlayerView so we can call hideController() on hold activation
+    val playerViewRef  = remember { mutableStateOf<PlayerView?>(null) }
     // Touch-down position — used to cancel hold if the finger moves (e.g. seekbar drag)
-    val downX       = remember { mutableFloatStateOf(0f) }
-    val downY       = remember { mutableFloatStateOf(0f) }
+    val downX          = remember { mutableFloatStateOf(0f) }
+    val downY          = remember { mutableFloatStateOf(0f) }
 
     // ── Controller / top-bar visibility ──────────────────────────────────────
     // Mirrors ExoPlayer's own controller visibility so our Back + CC bar
@@ -164,13 +166,13 @@ fun PlayerScreen(
             factory = { ctx ->
                 PlayerView(ctx).apply {
                     this.player   = player
-                    useController = true          // full seekbar, play/pause, time
-                    subtitleView?.visibility = View.GONE   // hide ExoPlayer CC — we draw our own
+                    useController = true
+                    subtitleView?.visibility = View.GONE
                     layoutParams = ViewGroup.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT,
                     )
-                }
+                }.also { playerViewRef.value = it }
             },
             update = { view ->
                 if (view.player !== player) view.player = player
@@ -197,7 +199,10 @@ fun PlayerScreen(
                                 // Only activate hold if player is actually playing
                                 if (player.isPlaying) {
                                     player.pause()
-                                    isHolding.value  = true
+                                    // Hide ExoPlayer's controller immediately so
+                                    // nothing appears on screen during hold
+                                    playerViewRef.value?.hideController()
+                                    isHolding.value = true
                                 }
                             }
                         }
