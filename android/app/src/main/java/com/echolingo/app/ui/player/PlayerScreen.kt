@@ -95,9 +95,6 @@ fun PlayerScreen(
     var subtitleYPx  by remember { mutableFloatStateOf(-1f) }
 
     // ── Hold-to-pause state ───────────────────────────────────────────────────
-    // These are plain mutableState boxes so they can be written from the
-    // View-level touch listener AND read from Compose UI safely.
-    val holdPaused  = remember { mutableStateOf(false) }
     val isHolding   = remember { mutableStateOf(false) }
     val holdJob     = remember { mutableStateOf<Job?>(null) }
     // Touch-down position — used to cancel hold if the finger moves (e.g. seekbar drag)
@@ -200,7 +197,6 @@ fun PlayerScreen(
                                 // Only activate hold if player is actually playing
                                 if (player.isPlaying) {
                                     player.pause()
-                                    holdPaused.value = true
                                     isHolding.value  = true
                                 }
                             }
@@ -223,7 +219,6 @@ fun PlayerScreen(
                             holdJob.value = null
                             if (isHolding.value) {
                                 player.play()
-                                holdPaused.value = false
                                 isHolding.value  = false
                             }
                         }
@@ -241,24 +236,6 @@ fun PlayerScreen(
                 color    = Color.White,
                 modifier = Modifier.align(Alignment.Center).padding(24.dp),
             )
-        }
-
-        // ── Hold-to-pause indicator (centre of screen) ────────────────────
-        if (holdPaused.value) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .background(Color.Black.copy(alpha = 0.60f), RoundedCornerShape(50))
-                    .padding(horizontal = 28.dp, vertical = 14.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    "⏸  Holding…",
-                    color      = Color.White,
-                    fontSize   = 16.sp,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            }
         }
 
         // ── Dual subtitle overlay (draggable vertically) ──────────────────
