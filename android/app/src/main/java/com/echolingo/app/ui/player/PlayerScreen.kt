@@ -6,6 +6,8 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -25,6 +27,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -34,6 +37,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
@@ -88,6 +92,10 @@ fun PlayerScreen(
     var activeTrans  by remember { mutableStateOf<Cue?>(null) }
     var positionMs   by remember { mutableLongStateOf(0L) }
     var status       by remember { mutableStateOf("Loading video...") }
+
+    // Local Y offset in pixels — updated instantly on every drag frame for smooth
+    // visual feedback. Persisted to DataStore asynchronously after drag ends.
+    var subtitleYPx by remember { mutableFloatStateOf(-1f) }  // -1 = not yet initialised
 
     // ── Controls visibility (auto-hides after 3 s) ────────────────────────────
     var controlsVisible by remember { mutableStateOf(false) }
@@ -158,15 +166,25 @@ fun PlayerScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
-            // Tap anywhere on the video = toggle pause / resume
+            // Tap anywhere on the video = toggle pause / resume.
+            // Uses awaitEachGesture so that a drag starting on the subtitle
+            // overlay (which consumes the pointer) does NOT trigger a pause.
             .pointerInput(Unit) {
-                detectTapGestures {
-                    if (player.isPlaying) player.pause() else player.play()
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    // Wait to see if this becomes a tap (no significant movement)
+                    val upOrCancel = waitForUpOrCancellation()
+                    if (upOrCancel != null && !down.isConsumed) {
+                        // Pointer was not consumed by a child (e.g. subtitle drag)
+                        if (player.isPlaying) player.pause() else player.play()
+                    }
                 }
             },
     ) {
         val maxHeightPx = constraints.maxHeight.toFloat().coerceAtLeast(1f)
-        val yPx         = maxHeightPx * settings.subtitleYPercent
+
+        // Initialise local Y from saved setting on first composition
+        if (subtitleYPx < 0f) subtitleYPx = maxHeightPx * settings.subtitleYPercent
 
         // ── ExoPlayer (no built-in controls — we own all touch) ───────────
         AndroidView(
@@ -194,7 +212,7 @@ fun PlayerScreen(
             )
         }
 
-        // ── Subtitle overlay (draggable) ──────────────────────────────────
+        // ── Subtitle overlay (draggable, vertical only) ───────────────────
         SubtitleOverlay(
             sourceCue  = activeSource,
             transCue   = activeTrans,
@@ -202,12 +220,19 @@ fun PlayerScreen(
             showTrans  = settings.showTrans,
             fontSize   = settings.fontSize,
             onDrag     = { deltaY ->
-                val next = ((yPx + deltaY) / maxHeightPx).coerceIn(0.12f, 0.86f)
-                scope.launch { settingsRepository.setSubtitleYPercent(next) }
+                // Update local px immediately (smooth, no DataStore round-trip lag)
+                subtitleYPx = (subtitleYPx + deltaY)
+                    .coerceIn(maxHeightPx * 0.05f, maxHeightPx * 0.92f)
+            },
+            onDragEnd  = {
+                // Persist position once the finger lifts
+                scope.launch {
+                    settingsRepository.setSubtitleYPercent(subtitleYPx / maxHeightPx)
+                }
             },
             modifier   = Modifier
                 .align(Alignment.TopCenter)
-                .offset { IntOffset(0, yPx.roundToInt()) },
+                .offset { IntOffset(0, subtitleYPx.roundToInt()) },
         )
 
         // ── Controls panel (fades in/out, auto-hides after 3 s) ──────────
@@ -258,6 +283,7 @@ fun PlayerScreen(
                 // ── Reset subtitle position ───────────────────────────────
                 TextButton(
                     onClick  = {
+                        subtitleYPx = maxHeightPx * 0.78f
                         scope.launch { settingsRepository.setSubtitleYPercent(0.78f) }
                     },
                     modifier = Modifier

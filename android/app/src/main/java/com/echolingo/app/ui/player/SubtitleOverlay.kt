@@ -1,7 +1,10 @@
 package com.echolingo.app.ui.player
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitTouchSlopOrCancellation
+import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -15,7 +18,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.TextUnit
@@ -31,12 +36,11 @@ fun SubtitleOverlay(
     showSource: Boolean,
     showTrans: Boolean,
     fontSize: FontSize,
-    onDrag: (Float) -> Unit,
+    onDrag: (deltaY: Float) -> Unit,
+    onDragEnd: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    if ((!showSource && !showTrans) || (sourceCue == null && transCue == null)) {
-        return
-    }
+    if ((!showSource && !showTrans) || (sourceCue == null && transCue == null)) return
 
     val sourceSize = when (fontSize) {
         FontSize.S -> 13.sp
@@ -49,9 +53,33 @@ fun SubtitleOverlay(
         modifier = modifier
             .fillMaxWidth()
             .pointerInput(Unit) {
-                detectDragGestures { change, dragAmount ->
-                    change.consume()
-                    onDrag(dragAmount.y)
+                // Custom drag handler:
+                //  • Only responds to vertical movement (ignores horizontal)
+                //  • Consumes the pointer so the parent tap handler (pause/resume)
+                //    does NOT fire when the user drags the subtitle
+                //  • Calls onDragEnd when the finger lifts so position is persisted
+                awaitEachGesture {
+                    val down: PointerInputChange = awaitFirstDown(requireUnconsumed = true)
+                    down.consume()
+
+                    // Wait for the user to move past touch slop before claiming the gesture
+                    val drag = awaitTouchSlopOrCancellation(down.id) { change, over ->
+                        // Only claim if mainly vertical movement
+                        if (kotlin.math.abs(over.y) > kotlin.math.abs(over.x)) {
+                            change.consume()
+                        }
+                    }
+
+                    if (drag != null) {
+                        drag(drag.id) { change ->
+                            val dy = change.positionChange().y
+                            if (kotlin.math.abs(dy) > 0f) {
+                                change.consume()
+                                onDrag(dy)
+                            }
+                        }
+                        onDragEnd()
+                    }
                 }
             }
             .padding(horizontal = 12.dp, vertical = 8.dp),
@@ -70,15 +98,15 @@ fun SubtitleOverlay(
 @Composable
 private fun SubtitleLine(text: String, fontSize: TextUnit, isSource: Boolean) {
     Text(
-        text = text,
-        fontSize = fontSize,
-        color = if (isSource) Color.White else Color(0xFFFFD54F),
+        text       = text,
+        fontSize   = fontSize,
+        color      = if (isSource) Color.White else Color(0xFFFFD54F),
         fontWeight = if (isSource) FontWeight.SemiBold else FontWeight.Normal,
-        textAlign = TextAlign.Center,
-        style = LocalTextStyle.current.copy(
+        textAlign  = TextAlign.Center,
+        style      = LocalTextStyle.current.copy(
             shadow = Shadow(color = Color.Black, offset = Offset.Zero, blurRadius = 6f),
         ),
-        modifier = Modifier
+        modifier   = Modifier
             .background(Color.Black.copy(alpha = 0.48f), RoundedCornerShape(4.dp))
             .padding(horizontal = 8.dp, vertical = 3.dp),
     )
